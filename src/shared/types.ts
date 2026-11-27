@@ -88,6 +88,12 @@ export type ChatConfig = {
   systemPrompt: string
   enterToSend: boolean
   autoApproveCommands: boolean
+  /** Default scaffold platform when user ask is ambiguous */
+  defaultPlatform?: 'web' | 'android' | 'electron' | 'python' | 'auto'
+  /** Image backend id — built-in procedural-png@1 */
+  imageBackend?: string
+  /** Override template pack directory (optional) */
+  templatePackPath?: string
 }
 
 export type WorkspaceInfo = {

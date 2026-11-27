@@ -22,9 +22,12 @@ export const DEFAULT_CONFIG: ChatConfig = {
   appearance: 'dark',
   fontSize: 15,
   systemPrompt:
-    'You are Tri Cass AI, a local coding assistant. Be practical and concise. Help plan, research, and create software on this machine.',
+    'You are Tri Cass AI, a local coding assistant. Be practical and concise. The user does not need to code — help them create websites, apps, Android scaffolds, images, and ASCII by asking in plain English. Help plan, research, and create software on this machine.',
   enterToSend: true,
-  autoApproveCommands: true
+  autoApproveCommands: true,
+  defaultPlatform: 'auto',
+  imageBackend: 'procedural-png@1',
+  templatePackPath: ''
 }
 
 function ensureDir(p: string): string {

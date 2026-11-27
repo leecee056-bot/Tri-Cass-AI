@@ -38,12 +38,33 @@ export type TriCassAPI = {
     mode?: 'chat' | 'summarise' | 'plan' | 'research' | 'build'
     agentMode?: boolean
     useKb?: boolean
+    selectedTemplateId?: string | null
+    imageMode?: boolean
   }) => Promise<unknown>
   chatStop: (runId?: string) => Promise<boolean>
   windowMinimize: () => Promise<void>
   windowMaximize: () => Promise<boolean>
   windowClose: () => Promise<boolean>
   windowIsMaximized: () => Promise<boolean>
+  templatesStatus: () => Promise<unknown>
+  templatesSearch: (opts: unknown) => Promise<unknown>
+  templatesDownload: (opts?: { extras?: boolean }) => Promise<unknown>
+  templatesCancelDownload: () => Promise<boolean>
+  templatesUse: (id: string, name?: string) => Promise<unknown>
+  templatesFavorite: (id: string) => Promise<unknown>
+  templatesRandom: () => Promise<unknown>
+  templatesGet: (id: string) => Promise<unknown>
+  templatesDiskEstimate: () => Promise<number>
+  templatesPreview: (id: string) => Promise<unknown>
+  templatesOpenFolder: (path: string) => Promise<boolean>
+  imageGenerate: (prompt: string, size?: '512' | '768' | '1024') => Promise<unknown>
+  imageHistory: () => Promise<unknown>
+  imageHelp: () => Promise<string>
+  asciiFonts: () => Promise<string[]>
+  asciiText: (text: string, font?: string) => Promise<unknown>
+  asciiImage: (imagePath: string, maxWidth?: number) => Promise<unknown>
+  asciiSave: (ascii: string, name?: string) => Promise<unknown>
+  asciiToPng: (ascii: string, name?: string) => Promise<unknown>
   on: (channel: string, handler: (payload: unknown) => void) => () => void
 }
 
@@ -55,7 +76,8 @@ const allowed = new Set([
   'chat:user',
   'agent:step',
   'models:pullProgress',
-  'kb:progress'
+  'kb:progress',
+  'templates:packProgress'
 ])
 
 const api: TriCassAPI = {
@@ -93,6 +115,25 @@ const api: TriCassAPI = {
   windowMaximize: () => ipcRenderer.invoke('window:maximize'),
   windowClose: () => ipcRenderer.invoke('window:close'),
   windowIsMaximized: () => ipcRenderer.invoke('window:isMaximized'),
+  templatesStatus: () => ipcRenderer.invoke('templates:status'),
+  templatesSearch: (opts) => ipcRenderer.invoke('templates:search', opts),
+  templatesDownload: (opts) => ipcRenderer.invoke('templates:download', opts),
+  templatesCancelDownload: () => ipcRenderer.invoke('templates:cancelDownload'),
+  templatesUse: (id, name) => ipcRenderer.invoke('templates:use', id, name),
+  templatesFavorite: (id) => ipcRenderer.invoke('templates:favorite', id),
+  templatesRandom: () => ipcRenderer.invoke('templates:random'),
+  templatesGet: (id) => ipcRenderer.invoke('templates:get', id),
+  templatesDiskEstimate: () => ipcRenderer.invoke('templates:diskEstimate'),
+  templatesPreview: (id) => ipcRenderer.invoke('templates:preview', id),
+  templatesOpenFolder: (path) => ipcRenderer.invoke('templates:openFolder', path),
+  imageGenerate: (prompt, size) => ipcRenderer.invoke('image:generate', prompt, size),
+  imageHistory: () => ipcRenderer.invoke('image:history'),
+  imageHelp: () => ipcRenderer.invoke('image:help'),
+  asciiFonts: () => ipcRenderer.invoke('ascii:fonts'),
+  asciiText: (text, font) => ipcRenderer.invoke('ascii:text', text, font),
+  asciiImage: (imagePath, maxWidth) => ipcRenderer.invoke('ascii:image', imagePath, maxWidth),
+  asciiSave: (ascii, name) => ipcRenderer.invoke('ascii:save', ascii, name),
+  asciiToPng: (ascii, name) => ipcRenderer.invoke('ascii:toPng', ascii, name),
   on: (channel, handler) => {
     if (!allowed.has(channel)) return () => undefined
     const listener = (_event: Electron.IpcRendererEvent, payload: unknown) => handler(payload)

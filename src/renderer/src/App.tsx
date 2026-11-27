@@ -9,6 +9,7 @@ import type {
   WorkspaceInfo
 } from '../../shared/types'
 import { ramBadgeLabel } from '../../shared/catalog'
+import { AboutPanel, AsciiPanel, TemplatesPanel } from './ExtraPanels'
 
 type Snapshot = {
   ollama: OllamaStatus
@@ -30,11 +31,11 @@ type UiMessage = {
   citations?: string[]
 }
 
-type Panel = 'chat' | 'models' | 'knowledge' | 'workspace' | 'settings' | 'about'
+type Panel = 'chat' | 'models' | 'knowledge' | 'workspace' | 'templates' | 'ascii' | 'settings' | 'about'
 
 const HINT_LINKS = [
   'Create a website in my workspace',
-  'Create a Node app with tests',
+  'Make an Android notes app',
   'Help me plan a local coding task'
 ]
 
@@ -94,6 +95,10 @@ export default function App() {
   const [showJump, setShowJump] = useState(false)
   const [slashOpen, setSlashOpen] = useState(false)
   const [dragOver, setDragOver] = useState(false)
+  const [imageMode, setImageMode] = useState(false)
+  const [imageSize, setImageSize] = useState<'512' | '768' | '1024'>('512')
+  const [selectedTemplateId, setSelectedTemplateId] = useState<string | null>(null)
+  const [packAttribution, setPackAttribution] = useState<string[]>([])
   const bottomRef = useRef<HTMLDivElement>(null)
   const listRef = useRef<HTMLDivElement>(null)
   const inputRef = useRef<HTMLTextAreaElement>(null)
@@ -217,6 +222,10 @@ export default function App() {
     setAgentMode(active?.agentMode !== false)
     setMaximized(await window.triCass.windowIsMaximized())
     setReady(true)
+    void window.triCass.templatesStatus().then((st) => {
+      const s = st as { attribution?: string[] }
+      setPackAttribution(s.attribution || [])
+    })
     requestAnimationFrame(() => inputRef.current?.focus())
   }
 
@@ -280,6 +289,7 @@ export default function App() {
     if (!content && !attachments.length) return
 
     // slash commands
+    let forceImage = imageMode
     if (content.startsWith('/plan ')) {
       mode = 'plan'
       content = content.slice(6)
@@ -289,10 +299,21 @@ export default function App() {
     } else if (content.startsWith('/kb ')) {
       mode = 'research'
       content = content.slice(4)
+    } else if (content.startsWith('/ascii')) {
+      setPanel('ascii')
+      setDraft('')
+      return
+    } else if (content.startsWith('/image ')) {
+      forceImage = true
+      content = content.slice(7)
     }
 
     if (attachments.length) {
       content = `${content}\n\nAttached:\n${attachments.map((a) => `- ${a}`).join('\n')}`
+    }
+
+    if (selectedTemplateId && agentMode && !forceImage) {
+      content = `${content}\n\n[Selected template: ${selectedTemplateId}]`
     }
 
     setDraft('')
@@ -303,14 +324,43 @@ export default function App() {
     setAgentLog('')
     userScrolledUp.current = false
     setMessages((prev) => [...prev, { id: `u-${Date.now()}`, role: 'user', content, createdAt: Date.now() }])
+
+    if (forceImage) {
+      const img = (await window.triCass.imageGenerate(content, imageSize)) as {
+        ok: boolean
+        path?: string
+        backend?: string
+        error?: string
+        safetyNote?: string
+      }
+      const assistantText = img.ok
+        ? `Generated image with \`${img.backend}\` (${imageSize}px):\n\n\`${img.path}\`\n\n${img.safetyNote || ''}`
+        : `Image generation failed: ${img.error}`
+      setMessages((prev) => [
+        ...prev,
+        {
+          id: `a-${Date.now()}`,
+          role: 'assistant',
+          content: assistantText,
+          paths: img.path ? [img.path] : [],
+          createdAt: Date.now()
+        }
+      ])
+      setBusy(false)
+      flash(img.ok ? 'Image saved' : 'Image failed')
+      return
+    }
+
     const result = (await window.triCass.chatSend({
       sessionId: activeId,
       content,
       model,
-      config,
+      config: { ...config, imageGeneration: forceImage || config.imageGeneration },
       mode,
       agentMode,
-      useKb
+      useKb,
+      selectedTemplateId,
+      imageMode: forceImage
     })) as { runId?: string }
     if (result?.runId) setRunId(result.runId)
   }
@@ -418,6 +468,12 @@ export default function App() {
               </button>
               <button className={`nav-item ${panel === 'workspace' ? 'active' : ''}`} type="button" onClick={() => setPanel('workspace')}>
                 Workspace
+              </button>
+              <button className={`nav-item ${panel === 'templates' ? 'active' : ''}`} type="button" onClick={() => setPanel('templates')}>
+                Templates
+              </button>
+              <button className={`nav-item ${panel === 'ascii' ? 'active' : ''}`} type="button" onClick={() => setPanel('ascii')}>
+                ASCII
               </button>
               <button className={`nav-item ${panel === 'settings' ? 'active' : ''}`} type="button" onClick={() => setPanel('settings')}>
                 Settings
@@ -608,7 +664,9 @@ export default function App() {
                       {[
                         { cmd: '/plan ', label: 'Plan', desc: 'Numbered implementation plan' },
                         { cmd: '/code ', label: 'Code', desc: 'Agent writes files in workspace' },
-                        { cmd: '/kb ', label: 'Research', desc: 'Answer using attached knowledge' }
+                        { cmd: '/kb ', label: 'Research', desc: 'Answer using attached knowledge' },
+                        { cmd: '/ascii', label: 'ASCII', desc: 'Open ASCII studio' },
+                        { cmd: '/image ', label: 'Image', desc: 'Generate a local PNG' }
                       ].map((item) => (
                         <button
                           key={item.cmd}
@@ -684,6 +742,36 @@ export default function App() {
                       >
                         KB{(activeSession?.kbPaths?.length ? ` · ${activeSession.kbPaths.length}` : '')}
                       </button>
+                      <button
+                        className={`tool-toggle ${imageMode ? 'on' : ''}`}
+                        type="button"
+                        title="Local image generation (writes a real PNG)"
+                        onClick={() => setImageMode((v) => !v)}
+                      >
+                        Image {imageMode ? 'on' : 'off'}
+                      </button>
+                      {imageMode ? (
+                        <select
+                          className="model-select"
+                          value={imageSize}
+                          aria-label="Image size"
+                          onChange={(e) => setImageSize(e.target.value as '512' | '768' | '1024')}
+                        >
+                          <option value="512">512</option>
+                          <option value="768">768</option>
+                          <option value="1024">1024</option>
+                        </select>
+                      ) : null}
+                      {selectedTemplateId ? (
+                        <button
+                          className="tool-toggle on"
+                          type="button"
+                          title="Clear selected template"
+                          onClick={() => setSelectedTemplateId(null)}
+                        >
+                          Template selected
+                        </button>
+                      ) : null}
                       <button className="tool-toggle" type="button" onClick={() => setSlashOpen((v) => !v)} title="Slash commands">/</button>
                     </div>
                     {busy ? (
@@ -814,11 +902,42 @@ export default function App() {
             </div>
           )}
 
+          {panel === 'templates' && (
+            <TemplatesPanel
+              onBack={() => setPanel('chat')}
+              selectedTemplateId={selectedTemplateId}
+              onSelectTemplate={setSelectedTemplateId}
+              flash={flash}
+              onUseTemplate={async (id, name) => {
+                const res = (await window.triCass.templatesUse(id, name)) as {
+                  ok: boolean
+                  projectPath?: string
+                  error?: string
+                }
+                if (res.ok && res.projectPath) {
+                  flash(`Copied to ${res.projectPath}`)
+                  setSelectedTemplateId(id)
+                  await window.triCass.templatesOpenFolder(res.projectPath)
+                  setWorkspace((await window.triCass.workspaceInfo()) as WorkspaceInfo)
+                } else flash(res.error || 'Failed')
+              }}
+              onEditTemplate={(id) => {
+                setSelectedTemplateId(id)
+                setPanel('chat')
+                queueDraft('Customise this template for my project — change colours and copy in plain English.')
+                inputRef.current?.focus()
+              }}
+            />
+          )}
+
+          {panel === 'ascii' && <AsciiPanel onBack={() => setPanel('chat')} flash={flash} />}
+
           {panel === 'settings' && (
-            <div className="messages">
+            <div className="messages panel-page">
               <div className="messages-inner">
                 <h2 style={{ fontFamily: 'var(--font-serif)', marginTop: 0 }}>Settings</h2>
                 <div className="settings-grid">
+                  <h3>General</h3>
                   <div className="field">
                     <label><span>Appearance</span></label>
                     <select value={config.appearance} onChange={(e) => void saveConfig({ ...config, appearance: e.target.value as ChatConfig['appearance'] })}>
@@ -836,17 +955,24 @@ export default function App() {
                     <textarea rows={4} value={config.systemPrompt} onChange={(e) => void saveConfig({ ...config, systemPrompt: e.target.value })} />
                   </div>
                   <div className="field">
-                    <label><span>Temperature</span><span>{config.temperature.toFixed(2)}</span></label>
-                    <input type="range" min={0} max={1.5} step={0.05} value={config.temperature} onChange={(e) => void saveConfig({ ...config, temperature: Number(e.target.value) })} />
+                    <label><span>Default output platform</span></label>
+                    <select
+                      value={config.defaultPlatform || 'auto'}
+                      onChange={(e) =>
+                        void saveConfig({
+                          ...config,
+                          defaultPlatform: e.target.value as ChatConfig['defaultPlatform']
+                        })
+                      }
+                    >
+                      <option value="auto">Auto / ask</option>
+                      <option value="web">Web</option>
+                      <option value="android">Android</option>
+                      <option value="electron">Electron</option>
+                      <option value="python">Python</option>
+                    </select>
                   </div>
-                  <div className="field">
-                    <label><span>Top P</span><span>{config.topP.toFixed(2)}</span></label>
-                    <input type="range" min={0} max={1} step={0.05} value={config.topP} onChange={(e) => void saveConfig({ ...config, topP: Number(e.target.value) })} />
-                  </div>
-                  <div className="field">
-                    <label><span>Max tokens</span><span>{config.maxTokens}</span></label>
-                    <input type="range" min={256} max={8192} step={256} value={config.maxTokens} onChange={(e) => void saveConfig({ ...config, maxTokens: Number(e.target.value) })} />
-                  </div>
+                  <h3>Models &amp; agent</h3>
                   <div className="row-between">
                     <span>Streaming</span>
                     <button className={`tool-toggle ${config.streaming ? 'on' : ''}`} type="button" onClick={() => void saveConfig({ ...config, streaming: !config.streaming })}>{config.streaming ? 'On' : 'Off'}</button>
@@ -859,6 +985,47 @@ export default function App() {
                     <span>Auto-approve agent commands</span>
                     <button className={`tool-toggle ${config.autoApproveCommands ? 'on' : ''}`} type="button" onClick={() => void saveConfig({ ...config, autoApproveCommands: !config.autoApproveCommands })}>{config.autoApproveCommands ? 'On' : 'Off'}</button>
                   </div>
+                  <h3>Templates &amp; image</h3>
+                  <div className="field">
+                    <label><span>Image backend</span></label>
+                    <input
+                      value={config.imageBackend || 'procedural-png@1'}
+                      onChange={(e) => void saveConfig({ ...config, imageBackend: e.target.value })}
+                    />
+                    <p style={{ color: 'var(--text-muted)', fontSize: '0.85rem', margin: '6px 0 0' }}>
+                      Built-in offline PNG writer. NSFW prompts blocked.
+                    </p>
+                  </div>
+                  <div className="field">
+                    <label><span>Template pack location (optional override)</span></label>
+                    <input
+                      value={config.templatePackPath || ''}
+                      placeholder="Leave blank for default userData/template-packs"
+                      onChange={(e) => void saveConfig({ ...config, templatePackPath: e.target.value })}
+                    />
+                  </div>
+                  <details>
+                    <summary>Advanced sampling</summary>
+                    <div className="field">
+                      <label><span>Temperature</span><span>{config.temperature.toFixed(2)}</span></label>
+                      <input type="range" min={0} max={1.5} step={0.05} value={config.temperature} onChange={(e) => void saveConfig({ ...config, temperature: Number(e.target.value) })} />
+                    </div>
+                    <div className="field">
+                      <label><span>Top P</span><span>{config.topP.toFixed(2)}</span></label>
+                      <input type="range" min={0} max={1} step={0.05} value={config.topP} onChange={(e) => void saveConfig({ ...config, topP: Number(e.target.value) })} />
+                    </div>
+                    <div className="field">
+                      <label><span>Max tokens</span><span>{config.maxTokens}</span></label>
+                      <input type="range" min={256} max={8192} step={256} value={config.maxTokens} onChange={(e) => void saveConfig({ ...config, maxTokens: Number(e.target.value) })} />
+                    </div>
+                  </details>
+                  <details>
+                    <summary>How templates + AI editing works</summary>
+                    <p style={{ color: 'var(--text-muted)' }}>
+                      Download the library once, browse offline, click Use to copy into your workspace, then chat
+                      with “AI edit” selected — Tri Cass AI changes the files for you. No code editor required.
+                    </p>
+                  </details>
                   <p style={{ color: 'var(--text-muted)', fontSize: '0.9rem' }}>
                     Privacy: chats, knowledge, and models stay on this machine. Telemetry is off. Releases are manual via GitHub.
                   </p>
@@ -870,6 +1037,25 @@ export default function App() {
                       await selectSession(s.id)
                     }}>Clear all chats</button>
                     <button className="btn" type="button" onClick={() => void window.triCass.exportChat(activeId!, 'json')}>Export chat JSON</button>
+                    <button
+                      className="btn"
+                      type="button"
+                      onClick={() =>
+                        void saveConfig({
+                          ...config,
+                          temperature: 0.7,
+                          topP: 0.9,
+                          maxTokens: 4096,
+                          streaming: true,
+                          appearance: 'dark',
+                          fontSize: 15,
+                          defaultPlatform: 'auto',
+                          imageBackend: 'procedural-png@1'
+                        })
+                      }
+                    >
+                      Reset defaults
+                    </button>
                     <button className="btn" type="button" onClick={() => setPanel('chat')}>Back to chat</button>
                   </div>
                   <details>
@@ -878,7 +1064,7 @@ export default function App() {
                       <li>Enter — send (when enabled)</li>
                       <li>Shift+Enter — newline</li>
                       <li>Ctrl/Cmd+Q — quit</li>
-                      <li>/plan /code /kb — slash commands</li>
+                      <li>/plan /code /kb /ascii /image — slash commands</li>
                     </ul>
                   </details>
                 </div>
@@ -887,16 +1073,7 @@ export default function App() {
           )}
 
           {panel === 'about' && (
-            <div className="messages">
-              <div className="messages-inner">
-                <h2 style={{ fontFamily: 'var(--font-serif)', marginTop: 0 }}>About Tri Cass AI</h2>
-                <p>Version {version} · MIT License</p>
-                <p style={{ color: 'var(--text-muted)' }}>
-                  Standalone local coding assistant. Updates ship as GitHub Releases (portable zip / installer).
-                </p>
-                <button className="btn" type="button" onClick={() => setPanel('chat')}>Back to chat</button>
-              </div>
-            </div>
+            <AboutPanel version={version} onBack={() => setPanel('chat')} attribution={packAttribution} />
           )}
         </section>
       </div>

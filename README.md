@@ -1,26 +1,31 @@
 # Tri Cass AI
 
-Standalone **local coding assistant** for household ~8 GB RAM PCs. Chat with a local LLM, attach a knowledge base to the current chat, and say **“make a website”** / **“make an app”** to create real project folders on disk.
+Standalone **local coding assistant** for household ~8 GB RAM PCs. Chat with a local LLM, attach a knowledge base, download a **1000+ template library**, generate **local images** and **ASCII art**, and ask in plain English to create websites, Node/Python apps, **Android** scaffolds, or Electron desktops — **you don’t need to code**.
 
-Separate product from Tri-Cass Desk (living-world companion). Brand: **Tri Cass AI** / **Tri-Cass** only.
+Separate product from Tri-Cass Desk. Brand: **Tri Cass AI** only.
 
 ## Features
 
 - Local chat via **Ollama** (streaming)
-- Curated **model catalog** (Qwen + Granite; 1.5B–30B-class) with RAM guidance + one-click pull
-- **Agent coding loop** (Cline-slim JSON tools) with template-first website/app scaffolds
-- **Per-chat knowledge base** (attach files/folders, retrieve into the session)
-- Dark mechanical **matrix-green** desktop UI
-- Windows **NSIS installer + portable** builds (`electron-builder`)
+- Curated **model catalog** (Qwen + Granite) with RAM guidance + one-click pull
+- **Templates** sidebar — MIT pack from GitHub (≥1000 usable entries), search, categories, Use + AI edit
+- **Image** composer toggle — offline `procedural-png@1` writes real PNGs ([docs/IMAGE_BACKEND.md](docs/IMAGE_BACKEND.md))
+- **ASCII studio** — figlet.js + image→ASCII
+- **Agent scaffolds** — website, Node, Python, Android (Capacitor), Electron, simple games
+- **Per-chat knowledge base**
+- Dark Tri Cass AI desktop UI
+- Windows **portable** (+ NSIS when available)
 
-## Architecture
+## Docs
 
-See [docs/architecture.md](docs/architecture.md).
+- [Architecture](docs/architecture.md)
+- [Templates pack](docs/TEMPLATES.md)
+- [Image backend](docs/IMAGE_BACKEND.md)
 
 ## Requirements
 
 - Node.js 20+
-- [Ollama](https://ollama.com) running locally (`ollama serve`)
+- [Ollama](https://ollama.com) locally (`ollama serve`)
 - Recommended first model: `qwen2.5-coder:3b` (fits ~8 GB)
 
 ## Develop
@@ -29,6 +34,7 @@ See [docs/architecture.md](docs/architecture.md).
 npm install
 npm run typecheck
 npm run smoke
+npx tsx scripts/evidence-v4.ts   # templates/image/ascii/android evidence
 npm run dev
 ```
 
@@ -38,12 +44,8 @@ npm run dev
 npm run pack:win
 ```
 
-Artifacts land in `release/` (`Tri-Cass-AI-*-win-x64.exe` installer + portable).
+Artifacts land in `release/`.
 
 ## Smoke test
 
-`npm run smoke` verifies website/app scaffolds on disk, KB attach/search, and (when Ollama is up) model pull + chat. Logs go to the project evidence folder when `TRI_CASS_EVIDENCE` is set.
-
-## Windows artifacts
-
-On Linux CI hosts without full Wine/NSIS, ship the **portable zip** built from `release/win-unpacked` (`Tri-Cass-AI-*-win-x64-portable.zip`). Unzip on Windows and run `Tri Cass AI.exe`. NSIS installers can be produced on a Windows builder with `npm run pack:win`.
+`npm run smoke` verifies website/app/Android scaffolds, local image PNG, ASCII fonts, KB, and (when Ollama is up) chat. Template pack count is reported when the library is installed under user data (`Templates → Download template library`).

@@ -39,6 +39,25 @@ import {
   resetSessionsToEmpty
 } from './services/chatStore'
 import { loadPrefs, savePrefs, DEFAULT_CONFIG } from './services/paths'
+import {
+  cancelPackDownload,
+  downloadTemplatePack,
+  estimatePackDiskMb,
+  getPackStatus,
+  getTemplate,
+  randomTemplate,
+  searchTemplates,
+  toggleFavorite,
+  useTemplate
+} from './services/templatePack'
+import { generateLocalImage, imageBackendHelp, imageHistory } from './services/imageGen'
+import {
+  asciiToPng,
+  imageToAscii,
+  listAsciiFonts,
+  saveAscii,
+  textToAscii
+} from './services/asciiArt'
 
 let mainWindow: BrowserWindow | null = null
 const abortControllers = new Map<string, AbortController>()
@@ -377,6 +396,8 @@ ipcMain.handle(
       mode?: 'chat' | 'summarise' | 'plan' | 'research' | 'build'
       agentMode?: boolean
       useKb?: boolean
+      selectedTemplateId?: string | null
+      imageMode?: boolean
     }
   ) => {
     const { sessionId, content, model, config } = payload
@@ -396,11 +417,33 @@ ipcMain.handle(
     appendMessage(sessionId, 'user', content)
     send('chat:user', { sessionId, content })
 
-    const coding =
-      payload.agentMode !== false &&
-      (mode === 'build' || wantsCodingAgent(content) || detectQuickBuild(content))
-
     try {
+      if (payload.imageMode || (config.imageGeneration && /\bimage\b/i.test(content))) {
+        send('chat:status', { sessionId, status: 'image' })
+        const img = generateLocalImage(content.replace(/^\/image\s*/i, ''), '512')
+        const assistantText = img.ok
+          ? `Generated image with \`${img.backend}\`:\n\n\`${img.path}\`\n\n${img.safetyNote || ''}`
+          : `Image generation failed: ${img.error}\n\n${imageBackendHelp()}`
+        appendMessage(sessionId, 'assistant', assistantText, {
+          kind: img.ok ? 'files' : 'error',
+          paths: img.path ? [img.path] : []
+        })
+        send('chat:done', {
+          sessionId,
+          content: assistantText,
+          files: img.path ? [img.path] : [],
+          runId
+        })
+        return { ok: img.ok, runId, path: img.path }
+      }
+
+      const coding =
+        payload.agentMode !== false &&
+        (mode === 'build' ||
+          wantsCodingAgent(content) ||
+          detectQuickBuild(content) ||
+          Boolean(payload.selectedTemplateId))
+
       if (coding) {
         send('chat:status', { sessionId, status: 'agent' })
         const result = await runCodingAgent({
@@ -409,7 +452,8 @@ ipcMain.handle(
           model,
           config,
           signal: ac.signal,
-          onStep: (step) => send('agent:step', { sessionId, step })
+          onStep: (step) => send('agent:step', { sessionId, step }),
+          selectedTemplateId: payload.selectedTemplateId
         })
         const citations = useKb ? searchKnowledge(sessionId, content).map((h) => h.path) : []
         const assistantText =
@@ -501,5 +545,47 @@ ipcMain.handle('chat:stop', async (_e, runId?: string) => {
 })
 
 function detectQuickBuild(content: string): boolean {
-  return /\bmake (that |this )?(a |an )?(website|web site|app)\b/i.test(content)
+  return /\bmake (that |this )?(a |an )?(website|web site|app|android|electron)\b/i.test(content)
 }
+
+ipcMain.handle('templates:status', async () => getPackStatus())
+ipcMain.handle('templates:search', async (_e, opts) => searchTemplates(opts || {}))
+ipcMain.handle('templates:download', async (_e, opts?: { extras?: boolean }) => {
+  try {
+    const status = await downloadTemplatePack((p) => send('templates:packProgress', p), opts)
+    return { ok: true, status }
+  } catch (err) {
+    return { ok: false, error: err instanceof Error ? err.message : String(err), status: getPackStatus() }
+  }
+})
+ipcMain.handle('templates:cancelDownload', async () => cancelPackDownload())
+ipcMain.handle('templates:use', async (_e, id: string, name?: string) => useTemplate(id, name))
+ipcMain.handle('templates:favorite', async (_e, id: string) => toggleFavorite(id))
+ipcMain.handle('templates:random', async () => randomTemplate())
+ipcMain.handle('templates:get', async (_e, id: string) => getTemplate(id))
+ipcMain.handle('templates:diskEstimate', async () => estimatePackDiskMb())
+ipcMain.handle('templates:preview', async (_e, id: string) => {
+  const tpl = getTemplate(id)
+  if (!tpl?.preview) return { ok: false }
+  await shell.openPath(tpl.preview)
+  return { ok: true, path: tpl.preview }
+})
+ipcMain.handle('templates:openFolder', async (_e, path: string) => {
+  await shell.openPath(path)
+  return true
+})
+
+ipcMain.handle('image:generate', async (_e, prompt: string, size?: '512' | '768' | '1024') =>
+  generateLocalImage(prompt, size || '512')
+)
+ipcMain.handle('image:history', async () => imageHistory())
+ipcMain.handle('image:help', async () => imageBackendHelp())
+
+ipcMain.handle('ascii:fonts', async () => listAsciiFonts())
+ipcMain.handle('ascii:text', async (_e, text: string, font?: string) => textToAscii(text, font || 'Standard'))
+ipcMain.handle('ascii:image', async (_e, imagePath: string, maxWidth?: number) =>
+  imageToAscii(imagePath, maxWidth || 80)
+)
+ipcMain.handle('ascii:save', async (_e, ascii: string, name?: string) => saveAscii(ascii, name))
+ipcMain.handle('ascii:toPng', async (_e, ascii: string, name?: string) => asciiToPng(ascii, name))
+

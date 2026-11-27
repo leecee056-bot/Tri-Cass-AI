@@ -4,22 +4,48 @@ import { writeFileSync, mkdirSync } from 'node:fs'
 import { dirname, join } from 'node:path'
 import { getWorkspaceRoot } from './workspace'
 
-export type ScaffoldKind = 'website' | 'app' | null
+export type ScaffoldKind =
+  | 'website'
+  | 'app'
+  | 'python'
+  | 'android'
+  | 'electron'
+  | 'game'
+  | null
 
 export function detectScaffoldIntent(prompt: string): ScaffoldKind {
   const p = prompt.toLowerCase()
   if (
+    /\b(android|apk|capacitor|cordova|kotlin|mobile\s*app)\b/.test(p) &&
+    /\b(make|create|build|scaffold|generate|notes?\s*app)\b/.test(p)
+  ) {
+    return 'android'
+  }
+  if (/\b(electron|desktop\s*app)\b/.test(p) && /\b(make|create|build|scaffold|generate)\b/.test(p)) {
+    return 'electron'
+  }
+  if (
+    /\b(python|flask|fastapi|django)\b/.test(p) &&
+    /\b(make|create|build|scaffold|generate|app)\b/.test(p)
+  ) {
+    return 'python'
+  }
+  if (
+    /\b(game|snake|tetris|pong)\b/.test(p) &&
+    /\b(make|create|build|scaffold|generate)\b/.test(p)
+  ) {
+    return 'game'
+  }
+  if (
     /\b(make|create|build|scaffold|generate)\b.{0,40}\b(web\s*site|website|landing\s*page|webpage)\b/.test(
       p
     ) ||
-    /\b(website|landing page)\b/.test(p)
+    /\b(website|landing page|restaurant\s+site)\b/.test(p)
   ) {
     return 'website'
   }
   if (
-    /\b(make|create|build|scaffold|generate)\b.{0,40}\b(app|application|desktop\s*app|node\s*app|cli)\b/.test(
-      p
-    ) ||
+    /\b(make|create|build|scaffold|generate)\b.{0,40}\b(app|application|node\s*app|cli)\b/.test(p) ||
     /\b(make that an? app|turn (it|that) into an? app)\b/.test(p)
   ) {
     return 'app'
@@ -605,4 +631,497 @@ npm test
   void createProjectDir
 
   return { projectPath, files }
+}
+
+/** Python CLI / small app with requirements + tests. */
+export function scaffoldPython(title = 'Tri Cass Python'): { projectPath: string; files: string[] } {
+  const projectPath = uniqueProjectDir(title)
+  const files: string[] = []
+  const mod = slugifyProject(title).replace(/-/g, '_') || 'app'
+
+  files.push(
+    write(
+      join(projectPath, 'requirements.txt'),
+      `# ${title} — created by Tri Cass AI
+# No third-party deps required for the starter.
+`
+    )
+  )
+  files.push(
+    write(
+      join(projectPath, `${mod}.py`),
+      `#!/usr/bin/env python3
+"""${title} — created by Tri Cass AI."""
+from __future__ import annotations
+
+import argparse
+from pathlib import Path
+
+
+def summarise(lines: list[str]) -> dict[str, float | int]:
+    total = len(lines)
+    chars = sum(len(s) for s in lines)
+    return {"total": total, "chars": chars, "average": (chars / total) if total else 0.0}
+
+
+def main(argv: list[str] | None = None) -> int:
+    parser = argparse.ArgumentParser(description="${title}")
+    parser.add_argument("path", nargs="?", help="Optional text file to summarise")
+    args = parser.parse_args(argv)
+    if args.path and Path(args.path).is_file():
+        lines = Path(args.path).read_text(encoding="utf-8").splitlines()
+    else:
+        lines = ["alpha", "beta", "gamma"]
+    stats = summarise(lines)
+    print("${title}")
+    print("────────────")
+    print(f"Items:   {stats['total']}")
+    print(f"Chars:   {stats['chars']}")
+    print(f"Average: {stats['average']:.2f}")
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
+`
+    )
+  )
+  files.push(
+    write(
+      join(projectPath, `test_${mod}.py`),
+      `import unittest
+from ${mod} import summarise
+
+
+class TestSummarise(unittest.TestCase):
+    def test_average(self):
+        stats = summarise(["ab", "cdef"])
+        self.assertEqual(stats["total"], 2)
+        self.assertEqual(stats["chars"], 6)
+        self.assertEqual(stats["average"], 3.0)
+
+
+if __name__ == "__main__":
+    unittest.main()
+`
+    )
+  )
+  files.push(
+    write(
+      join(projectPath, 'README.md'),
+      `# ${title}
+
+Python app created by **Tri Cass AI**.
+
+\`\`\`bash
+python3 ${mod}.py
+python3 -m unittest test_${mod}.py
+\`\`\`
+`
+    )
+  )
+  files.push(write(join(projectPath, '.gitignore'), `__pycache__/\n*.pyc\n.venv/\n`))
+  return { projectPath, files }
+}
+
+/**
+ * Android-oriented scaffold via Capacitor-style web shell + Android project stubs.
+ * Honest about toolchain: APK build needs Android SDK / Capacitor CLI on the machine.
+ */
+export function scaffoldAndroid(title = 'Tri Cass Android'): { projectPath: string; files: string[] } {
+  const projectPath = uniqueProjectDir(title)
+  const files: string[] = []
+  const pkg = `ai.tricass.${slugifyProject(title).replace(/-/g, '') || 'app'}`
+  const appId = slugifyProject(title) || 'tri-cass-android'
+
+  files.push(
+    write(
+      join(projectPath, 'package.json'),
+      JSON.stringify(
+        {
+          name: appId,
+          version: '0.1.0',
+          private: true,
+          description: `${title} — Capacitor-ready Android scaffold by Tri Cass AI`,
+          scripts: {
+            start: 'npx --yes serve www -p 5177',
+            'build:web': 'echo "Static www/ ready"',
+            'cap:add': 'npx --yes @capacitor/cli add android',
+            'cap:sync': 'npx --yes @capacitor/cli sync android',
+            'cap:open': 'npx --yes @capacitor/cli open android'
+          }
+        },
+        null,
+        2
+      ) + '\n'
+    )
+  )
+  files.push(
+    write(
+      join(projectPath, 'capacitor.config.json'),
+      JSON.stringify(
+        {
+          appId: pkg,
+          appName: title,
+          webDir: 'www',
+          server: { androidScheme: 'https' }
+        },
+        null,
+        2
+      ) + '\n'
+    )
+  )
+  files.push(
+    write(
+      join(projectPath, 'www/index.html'),
+      `<!DOCTYPE html>
+<html lang="en-GB">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+  <title>${title}</title>
+  <link rel="stylesheet" href="styles.css" />
+</head>
+<body>
+  <header>
+    <h1>${title}</h1>
+    <p class="sub">Local notes — works in browser; wrap with Capacitor for Android.</p>
+  </header>
+  <main>
+    <form id="form">
+      <label>Note
+        <textarea id="note" rows="4" placeholder="Type a note…" required></textarea>
+      </label>
+      <button type="submit">Save note</button>
+    </form>
+    <ul id="list" aria-live="polite"></ul>
+  </main>
+  <script src="app.js"></script>
+</body>
+</html>
+`
+    )
+  )
+  files.push(
+    write(
+      join(projectPath, 'www/styles.css'),
+      `:root { font-family: "Segoe UI", system-ui, sans-serif; color: #e8ecf3; background: #0f1218; }
+body { margin: 0; min-height: 100vh; }
+header, main { width: min(640px, calc(100% - 2rem)); margin: 0 auto; padding: 1.5rem 0; }
+h1 { margin: 0 0 0.35rem; letter-spacing: -0.02em; }
+.sub { color: #9aa3b5; margin: 0 0 1.5rem; }
+textarea, button {
+  width: 100%; box-sizing: border-box; border-radius: 12px; border: 1px solid rgba(255,255,255,0.12);
+  background: #171b24; color: inherit; padding: 0.75rem; font: inherit;
+}
+button { background: #3d9a6a; color: #04150c; font-weight: 650; border: none; margin-top: 0.75rem; cursor: pointer; }
+ul { list-style: none; padding: 0; display: grid; gap: 0.6rem; }
+li { background: #171b24; border: 1px solid rgba(255,255,255,0.1); border-radius: 12px; padding: 0.85rem 1rem; }
+`
+    )
+  )
+  files.push(
+    write(
+      join(projectPath, 'www/app.js'),
+      `const KEY = 'tri-cass-android-notes';
+const list = document.getElementById('list');
+const form = document.getElementById('form');
+const note = document.getElementById('note');
+
+function load() {
+  try { return JSON.parse(localStorage.getItem(KEY) || '[]'); } catch { return []; }
+}
+function save(items) { localStorage.setItem(KEY, JSON.stringify(items)); render(items); }
+function render(items) {
+  list.innerHTML = items.map((t, i) => \`<li data-i="\${i}">\${t} <button type="button" data-del="\${i}">Delete</button></li>\`).join('') || '<li>No notes yet.</li>';
+}
+form.addEventListener('submit', (e) => {
+  e.preventDefault();
+  const text = note.value.trim();
+  if (!text) return;
+  const items = load();
+  items.unshift(text);
+  note.value = '';
+  save(items);
+});
+list.addEventListener('click', (e) => {
+  const btn = e.target.closest('[data-del]');
+  if (!btn) return;
+  const items = load();
+  items.splice(Number(btn.getAttribute('data-del')), 1);
+  save(items);
+});
+render(load());
+`
+    )
+  )
+  files.push(
+    write(
+      join(projectPath, 'android/README.md'),
+      `# Android project placeholder
+
+This folder is ready for **Capacitor** to generate a real Android Studio project.
+
+## When Android SDK + Node are installed
+
+\`\`\`bash
+npm install
+npx cap add android
+npx cap sync android
+npx cap open android
+\`\`\`
+
+Build an APK from Android Studio (**Build → Build Bundle(s) / APK(s)**), or:
+
+\`\`\`bash
+cd android && ./gradlew assembleDebug
+\`\`\`
+
+APK output (typical): \`android/app/build/outputs/apk/debug/app-debug.apk\`
+
+## When toolchain is missing
+
+You can still open \`www/index.html\` in a browser — the notes app works offline as a web shell.
+Tri Cass AI will not sign release APKs or handle Play Store credentials.
+`
+    )
+  )
+  files.push(
+    write(
+      join(projectPath, 'README.md'),
+      `# ${title}
+
+Android-oriented notes app scaffold by **Tri Cass AI** (Capacitor web shell + Android instructions).
+
+## Try now (no Android SDK)
+
+Open \`www/index.html\` or run \`npm start\`.
+
+## Build APK (when SDK present)
+
+See \`android/README.md\`. Signing / Play Store upload is out of scope — ask only for local debug builds.
+`
+    )
+  )
+  files.push(write(join(projectPath, '.gitignore'), `node_modules/\nandroid/app/build/\n.idea/\n`))
+  return { projectPath, files }
+}
+
+/** Electron desktop app scaffold. */
+export function scaffoldElectron(title = 'Tri Cass Desktop'): { projectPath: string; files: string[] } {
+  const projectPath = uniqueProjectDir(title)
+  const files: string[] = []
+  const name = slugifyProject(title) || 'tri-cass-desktop'
+
+  files.push(
+    write(
+      join(projectPath, 'package.json'),
+      JSON.stringify(
+        {
+          name,
+          version: '0.1.0',
+          private: true,
+          main: 'main.js',
+          scripts: { start: 'electron .', pack: 'electron .' },
+          devDependencies: { electron: '^35.0.0' }
+        },
+        null,
+        2
+      ) + '\n'
+    )
+  )
+  files.push(
+    write(
+      join(projectPath, 'main.js'),
+      `const { app, BrowserWindow } = require('electron');
+const path = require('path');
+
+function createWindow() {
+  const win = new BrowserWindow({
+    width: 960,
+    height: 640,
+    title: '${title}',
+    webPreferences: { contextIsolation: true }
+  });
+  win.loadFile('index.html');
+}
+
+app.whenReady().then(createWindow);
+app.on('window-all-closed', () => { if (process.platform !== 'darwin') app.quit(); });
+`
+    )
+  )
+  files.push(
+    write(
+      join(projectPath, 'index.html'),
+      `<!DOCTYPE html>
+<html lang="en-GB">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>${title}</title>
+  <link rel="stylesheet" href="styles.css" />
+</head>
+<body>
+  <main>
+    <h1>${title}</h1>
+    <p>Desktop shell created by Tri Cass AI. Edit this page and restart Electron.</p>
+    <button id="ping" type="button">Ping</button>
+    <p id="out" role="status"></p>
+  </main>
+  <script src="renderer.js"></script>
+</body>
+</html>
+`
+    )
+  )
+  files.push(
+    write(
+      join(projectPath, 'styles.css'),
+      `body { margin: 0; font-family: "Segoe UI", system-ui, sans-serif; background: #10141c; color: #e8ecf3; }
+main { padding: 2rem; max-width: 40rem; }
+button { background: #3d9a6a; color: #04150c; border: 0; border-radius: 999px; padding: 0.6rem 1.1rem; font-weight: 650; cursor: pointer; }
+`
+    )
+  )
+  files.push(
+    write(
+      join(projectPath, 'renderer.js'),
+      `document.getElementById('ping')?.addEventListener('click', () => {
+  document.getElementById('out').textContent = 'Hello from ${title} at ' + new Date().toLocaleTimeString();
+});
+`
+    )
+  )
+  files.push(
+    write(
+      join(projectPath, 'README.md'),
+      `# ${title}
+
+Electron desktop scaffold by **Tri Cass AI**.
+
+\`\`\`bash
+npm install
+npm start
+\`\`\`
+`
+    )
+  )
+  files.push(write(join(projectPath, '.gitignore'), `node_modules/\n`))
+  return { projectPath, files }
+}
+
+/** Simple browser game (Snake). */
+export function scaffoldGame(title = 'Tri Cass Game'): { projectPath: string; files: string[] } {
+  const projectPath = uniqueProjectDir(title)
+  const files: string[] = []
+  files.push(
+    write(
+      join(projectPath, 'index.html'),
+      `<!DOCTYPE html>
+<html lang="en-GB">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>${title}</title>
+  <link rel="stylesheet" href="styles.css" />
+</head>
+<body>
+  <main>
+    <h1>${title}</h1>
+    <p>Arrow keys / WASD to move. Space to pause.</p>
+    <canvas id="game" width="400" height="400" aria-label="Game board"></canvas>
+    <p id="score">Score: 0</p>
+  </main>
+  <script src="game.js"></script>
+</body>
+</html>
+`
+    )
+  )
+  files.push(
+    write(
+      join(projectPath, 'styles.css'),
+      `body { margin: 0; background: #0f1218; color: #e8ecf3; font-family: "Segoe UI", system-ui, sans-serif; }
+main { max-width: 440px; margin: 2rem auto; text-align: center; }
+canvas { background: #171b24; border: 1px solid rgba(255,255,255,0.12); border-radius: 12px; }
+`
+    )
+  )
+  files.push(
+    write(
+      join(projectPath, 'game.js'),
+      `const canvas = document.getElementById('game');
+const ctx = canvas.getContext('2d');
+const scoreEl = document.getElementById('score');
+const cell = 20;
+let snake = [{ x: 8, y: 8 }];
+let dir = { x: 1, y: 0 };
+let food = { x: 12, y: 10 };
+let score = 0;
+let paused = false;
+let timer;
+
+function placeFood() {
+  food = { x: Math.floor(Math.random() * 20), y: Math.floor(Math.random() * 20) };
+}
+function tick() {
+  if (paused) return;
+  const head = { x: snake[0].x + dir.x, y: snake[0].y + dir.y };
+  if (head.x < 0 || head.y < 0 || head.x >= 20 || head.y >= 20 || snake.some((s) => s.x === head.x && s.y === head.y)) {
+    snake = [{ x: 8, y: 8 }]; dir = { x: 1, y: 0 }; score = 0; placeFood();
+  } else {
+    snake.unshift(head);
+    if (head.x === food.x && head.y === food.y) { score += 1; placeFood(); }
+    else snake.pop();
+  }
+  scoreEl.textContent = 'Score: ' + score;
+  ctx.fillStyle = '#171b24'; ctx.fillRect(0, 0, 400, 400);
+  ctx.fillStyle = '#3d9a6a'; snake.forEach((s) => ctx.fillRect(s.x * cell, s.y * cell, cell - 1, cell - 1));
+  ctx.fillStyle = '#e8c56b'; ctx.fillRect(food.x * cell, food.y * cell, cell - 1, cell - 1);
+}
+window.addEventListener('keydown', (e) => {
+  const k = e.key.toLowerCase();
+  if (k === 'arrowup' || k === 'w') dir = { x: 0, y: -1 };
+  if (k === 'arrowdown' || k === 's') dir = { x: 0, y: 1 };
+  if (k === 'arrowleft' || k === 'a') dir = { x: -1, y: 0 };
+  if (k === 'arrowright' || k === 'd') dir = { x: 1, y: 0 };
+  if (k === ' ') paused = !paused;
+});
+timer = setInterval(tick, 120);
+`
+    )
+  )
+  files.push(
+    write(
+      join(projectPath, 'README.md'),
+      `# ${title}
+
+Browser game created by **Tri Cass AI**. Open \`index.html\`.
+`
+    )
+  )
+  return { projectPath, files }
+}
+
+export function runScaffold(
+  kind: Exclude<ScaffoldKind, null>,
+  title: string
+): { projectPath: string; files: string[] } {
+  switch (kind) {
+    case 'website':
+      return scaffoldWebsite(title)
+    case 'app':
+      return scaffoldApp(title)
+    case 'python':
+      return scaffoldPython(title)
+    case 'android':
+      return scaffoldAndroid(title)
+    case 'electron':
+      return scaffoldElectron(title)
+    case 'game':
+      return scaffoldGame(title)
+    default:
+      return scaffoldApp(title)
+  }
 }

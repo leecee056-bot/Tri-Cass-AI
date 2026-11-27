@@ -5,6 +5,9 @@ export const GRAMMAR_TOOLS = [
   'list_dir',
   'run',
   'search_knowledge',
+  'apply_template',
+  'generate_image',
+  'generate_ascii',
   'finish'
 ] as const
 
@@ -17,7 +20,7 @@ export type GrammarCall = {
 
 export const MAX_GRAMMAR_STEPS = 12
 
-export const GRAMMAR_SYSTEM = `You are Tri Cass AI, a local coding agent. Reply with ONE JSON object only — no markdown fences, no prose.
+export const GRAMMAR_SYSTEM = `You are Tri Cass AI, a local no-code coding agent. Reply with ONE JSON object only — no markdown fences, no prose.
 Shape: {"tool":"<name>","args":{...}}
 Tools (one per reply):
 - write_file: args path, content — create/overwrite under the project folder
@@ -26,8 +29,13 @@ Tools (one per reply):
 - list_dir: args path ("" = project root)
 - run: args command — run in project folder (node/npm/python preferred)
 - search_knowledge: args query
-- finish: args message — done; message is shown to the user
-Prefer relative paths. Prefer short files. Call finish when the project exists on disk.`
+- apply_template: args id, name — copy a library template into the workspace
+- generate_image: args prompt, size (512|768|1024) — local PNG writer
+- generate_ascii: args text, font OR image — figlet / image→ASCII
+- finish: args message — done; message is shown to the user in plain English
+Prefer relative paths. Prefer short files. Never require the user to open a code editor.
+Refuse unsafe Android signing / Play Store credential requests clearly.
+Call finish when the project exists on disk.`
 
 const TOOL_SET = new Set<string>(GRAMMAR_TOOLS)
 
