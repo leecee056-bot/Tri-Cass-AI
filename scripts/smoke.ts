@@ -5,9 +5,17 @@
 import { mkdirSync, writeFileSync, existsSync, readFileSync, rmSync } from 'node:fs'
 import { join } from 'node:path'
 import { homedir, tmpdir } from 'node:os'
-import { scaffoldApp, scaffoldWebsite, detectScaffoldIntent } from '../src/main/services/templates'
+import {
+  scaffoldApp,
+  scaffoldWebsite,
+  scaffoldAndroid,
+  detectScaffoldIntent
+} from '../src/main/services/templates'
 import { attachKnowledge, searchKnowledge, clearKnowledge } from '../src/main/services/knowledge'
 import { setWorkspaceRoot, getWorkspaceInfo } from '../src/main/services/workspace'
+import { generateLocalImage } from '../src/main/services/imageGen'
+import { textToAscii, listAsciiFonts } from '../src/main/services/asciiArt'
+import { getPackStatus, searchTemplates } from '../src/main/services/templatePack'
 
 const evidenceDir =
   process.env.TRI_CASS_EVIDENCE ||
@@ -124,6 +132,17 @@ async function main(): Promise<void> {
     log('ollama offline — chat/pull skipped (scaffold+KB still verified)')
   }
 
+  const android = scaffoldAndroid('Smoke Android Notes')
+  log(`android scaffold files=${android.files.length} intent=${detectScaffoldIntent('make an Android notes app')}`)
+  const img = generateLocalImage('smoke harbour dusk', '512')
+  log(`image gen ok=${img.ok} backend=${img.backend} bytes=${img.path ? readFileSync(img.path).length : 0}`)
+  const fonts = listAsciiFonts()
+  const ascii = textToAscii('Tri Cass', fonts[0] || 'Standard')
+  log(`ascii fonts=${fonts.length} ok=${ascii.ok} lines=${ascii.ascii.split('\n').length}`)
+  const pack = getPackStatus()
+  const tplSearch = searchTemplates({ limit: 3 })
+  log(`template pack count=${pack.count} search=${tplSearch.total}`)
+
   const summary = {
     ok: true,
     workspace: smokeRoot,
@@ -131,6 +150,10 @@ async function main(): Promise<void> {
     websiteFiles: site.files,
     app: app.projectPath,
     appFiles: app.files,
+    androidFiles: android.files.length,
+    imageOk: img.ok,
+    asciiFonts: fonts.length,
+    templatePackCount: pack.count,
     kbHits: hits.length,
     ollama: ollama.ok,
     homeDefault: join(homedir(), 'TriCassAI', 'projects')

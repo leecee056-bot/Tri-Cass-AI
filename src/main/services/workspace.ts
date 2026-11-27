@@ -27,6 +27,10 @@ export function setWorkspaceRoot(path: string): WorkspaceInfo {
   if (!existsSync(resolved)) mkdirSync(resolved, { recursive: true })
   const prefs = loadPrefs()
   prefs.workspaceRoot = resolved
+  prefs.recentWorkspaces = [
+    resolved,
+    ...(prefs.recentWorkspaces || []).filter((p) => p !== resolved)
+  ].slice(0, 12)
   savePrefs(prefs)
   return getWorkspaceInfo()
 }
@@ -45,7 +49,61 @@ export function getWorkspaceInfo(): WorkspaceInfo {
   } catch {
     projects = []
   }
-  return { root, projects }
+  const prefs = loadPrefs()
+  const recent = prefs.recentWorkspaces || []
+  const pinned = prefs.pinnedWorkspaces || []
+  let diskMb = 0
+  let counted = 0
+  const walkSize = (p: string) => {
+    if (counted > 4000) return
+    let entries: string[]
+    try {
+      entries = readdirSync(p)
+    } catch {
+      return
+    }
+    for (const name of entries) {
+      if (name === 'node_modules' || name === '.git') continue
+      const full = join(p, name)
+      try {
+        const st = statSync(full)
+        if (st.isDirectory()) walkSize(full)
+        else {
+          diskMb += st.size
+          counted++
+        }
+      } catch {
+        /* skip */
+      }
+    }
+  }
+  walkSize(root)
+  diskMb = Math.round((diskMb / (1024 * 1024)) * 10) / 10
+  return { root, projects, recent, pinned, diskMb }
+}
+
+export function touchRecentWorkspace(path: string): void {
+  const prefs = loadPrefs()
+  prefs.recentWorkspaces = [path, ...(prefs.recentWorkspaces || []).filter((p) => p !== path)].slice(
+    0,
+    12
+  )
+  savePrefs(prefs)
+}
+
+export function pinWorkspace(path: string, pinned = true): void {
+  const prefs = loadPrefs()
+  const set = new Set(prefs.pinnedWorkspaces || [])
+  if (pinned) set.add(path)
+  else set.delete(path)
+  prefs.pinnedWorkspaces = [...set]
+  savePrefs(prefs)
+}
+
+export function createWorkspaceFolder(name: string): string {
+  const path = join(getWorkspaceRoot(), slugifyProject(name))
+  mkdirSync(path, { recursive: true })
+  return path
 }
 
 export function resolveInWorkspace(raw: string, project?: string): string {
@@ -99,14 +157,30 @@ export function editText(path: string, oldStr: string, newStr: string): string {
   return `edited ${path}`
 }
 
+const DANGEROUS =
+  /\b(rm\s+-rf\s+\/|mkfs|dd\s+if=|shutdown|reboot|format\s+[a-z]:|del\s+\/s|Remove-Item\s+-Recurse\s+-Force\s+C:\\)/i
+
+const commandControllers = new Map<string, AbortController>()
+
+export function isDangerousCommand(command: string): boolean {
+  return DANGEROUS.test(command)
+}
+
 export async function runCommand(
   cwd: string,
   command: string,
-  timeoutMs = 60_000
+  timeoutMs = 60_000,
+  opts?: { id?: string; autoApprove?: boolean; onChunk?: (chunk: string) => void }
 ): Promise<string> {
-  // Local-first: shell via /bin/sh or cmd — capped timeout
+  if (isDangerousCommand(command) && !opts?.autoApprove) {
+    return `error: blocked dangerous command (enable auto-approve in Settings to override carefully): ${command}`
+  }
   const isWin = process.platform === 'win32'
+  const id = opts?.id || `cmd-${Date.now()}`
+  const ac = new AbortController()
+  commandControllers.set(id, ac)
   try {
+    opts?.onChunk?.(`[cwd ${cwd}]\n$ ${command}\n`)
     const { stdout, stderr } = await execFileAsync(
       isWin ? 'cmd.exe' : '/bin/sh',
       isWin ? ['/c', command] : ['-c', command],
@@ -114,15 +188,38 @@ export async function runCommand(
         cwd,
         timeout: timeoutMs,
         maxBuffer: 1024 * 1024,
-        env: { ...process.env, CI: '1' }
+        env: { ...process.env, CI: '1' },
+        signal: ac.signal
       }
     )
     const out = `${stdout || ''}${stderr ? '\n' + stderr : ''}`.trim()
-    return out.slice(0, 6000) || '(no output)'
+    const text = out.slice(0, 6000) || '(no output)'
+    opts?.onChunk?.(text)
+    return text
   } catch (err) {
-    const e = err as { stdout?: string; stderr?: string; message?: string }
+    const e = err as { stdout?: string; stderr?: string; message?: string; name?: string }
+    if (e.name === 'AbortError' || /abort/i.test(e.message || '')) return 'error: command cancelled'
     return `error: ${(e.stderr || e.stdout || e.message || String(err)).slice(0, 4000)}`
+  } finally {
+    commandControllers.delete(id)
   }
+}
+
+export function cancelCommand(id?: string): boolean {
+  if (id && commandControllers.has(id)) {
+    commandControllers.get(id)!.abort()
+    commandControllers.delete(id)
+    return true
+  }
+  for (const [, ac] of commandControllers) ac.abort()
+  commandControllers.clear()
+  return true
+}
+
+/** Ignore large binaries when listing/reading for agent context. */
+export function isIgnoredBinary(name: string, size: number): boolean {
+  if (size > 2_000_000) return true
+  return /\.(png|jpe?g|gif|webp|ico|woff2?|ttf|eot|mp4|zip|gz|7z|exe|dll|so|dylib|pdf)$/i.test(name)
 }
 
 export function slugifyProject(name: string): string {
