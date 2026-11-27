@@ -40,6 +40,7 @@ import {
 } from './services/knowledge'
 import {
   loadSessions,
+  saveSessions,
   createSession,
   getSession,
   appendMessage,
@@ -171,16 +172,18 @@ function createWindow(): void {
 
   const revealMain = (): void => {
     if (!mainWindow) return
-    mainWindow.show()
+    // Close splash first so the shell never peeks behind the small splash window
     if (splashWindow && !splashWindow.isDestroyed()) {
       splashWindow.close()
       splashWindow = null
     }
+    mainWindow.show()
+    mainWindow.focus()
   }
 
   mainWindow.once('ready-to-show', () => {
-    // Let splash animation play (~1.5s) before revealing the shell
-    setTimeout(revealMain, splashWindow ? 1500 : 0)
+    // Let splash animation play (~1.6s) before revealing the shell
+    setTimeout(revealMain, splashWindow ? 1600 : 0)
   })
 
   const persistBounds = (): void => {
@@ -294,6 +297,15 @@ ipcMain.handle('app:getSnapshot', async () => {
   const prefs = loadPrefs()
   const ollama = await ollamaStatus()
   let sessions = loadSessions()
+  // Collapse duplicate empty "New Chat" rows left by older builds
+  const empties = sessions.filter(
+    (s) => !s.archived && s.title === 'New Chat' && (s.messages?.length || 0) === 0
+  )
+  if (empties.length > 1) {
+    const keep = empties[0].id
+    sessions = sessions.filter((s) => s.id === keep || !(s.title === 'New Chat' && (s.messages?.length || 0) === 0))
+    saveSessions(sessions)
+  }
   if (!sessions.length) {
     createSession('New Chat')
     sessions = loadSessions()

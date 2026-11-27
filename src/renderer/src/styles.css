@@ -129,9 +129,46 @@
 [data-theme='glass'] .field textarea,
 [data-theme='glass'] .field select,
 [data-theme='glass'] .model-select {
-  background: rgba(0, 0, 0, 0.28);
-  backdrop-filter: blur(10px);
-  -webkit-backdrop-filter: blur(10px);
+  background: rgba(8, 12, 18, 0.78);
+  color: var(--text);
+  border-color: var(--border-strong);
+  backdrop-filter: blur(12px);
+  -webkit-backdrop-filter: blur(12px);
+}
+
+[data-theme='glass'] .field select option,
+[data-theme='glass'] .model-select option {
+  background: #141820;
+  color: #f3f6fb;
+}
+
+[data-theme='glass'] .panel-page .messages-inner > p,
+[data-theme='glass'] .field > p,
+[data-theme='glass'] .template-body p,
+[data-theme='glass'] .banner {
+  color: rgba(243, 246, 251, 0.92);
+  text-shadow: 0 1px 2px rgba(0, 0, 0, 0.45);
+}
+
+[data-theme='glass'] .ascii-out,
+[data-theme='glass'] .settings-grid,
+[data-theme='glass'] .panel-card,
+[data-theme='glass'] .catalog-list,
+[data-theme='glass'] .template-grid {
+  background: rgba(10, 14, 20, 0.72);
+  backdrop-filter: blur(var(--glass-blur)) saturate(1.2);
+  -webkit-backdrop-filter: blur(var(--glass-blur)) saturate(1.2);
+  border: 1px solid var(--border);
+  border-radius: 14px;
+}
+
+[data-theme='glass'] .ascii-out {
+  color: #f5f7fb;
+  background: rgba(6, 8, 12, 0.82);
+}
+
+[data-theme='glass'] .settings-grid {
+  padding: 14px;
 }
 
 .texture-grid {
@@ -677,6 +714,11 @@ button {
   background: transparent;
   image-rendering: pixelated;
   filter: drop-shadow(0 12px 28px rgba(0, 0, 0, 0.28));
+}
+
+.about-card {
+  padding: 18px 20px 20px;
+  max-width: 640px;
 }
 
 .about-hero {

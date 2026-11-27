@@ -34,7 +34,7 @@ export const BUILTIN_TEXTURES: Array<{
     id: 'cosmic',
     label: 'Cosmic',
     file: 'cosmic.jpg',
-    description: 'Night-sky starfield photograph'
+    description: 'Deep starfield photograph'
   }
 ]
 
