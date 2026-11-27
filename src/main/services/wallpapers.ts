@@ -125,12 +125,15 @@ export function wallpaperDataUrl(
       const hit = loadMeta().find((m) => m.id === raw)
       if (!hit) return { ok: false, error: 'missing custom' }
       const buf = readFileSync(join(customDir(), hit.file))
+      const ext = extname(hit.file).toLowerCase()
       const mime =
-        extname(hit.file).toLowerCase() === '.png'
+        ext === '.png'
           ? 'image/png'
-          : extname(hit.file).toLowerCase() === '.webp'
+          : ext === '.webp'
             ? 'image/webp'
-            : 'image/jpeg'
+            : ext === '.gif'
+              ? 'image/gif'
+              : 'image/jpeg'
       return { ok: true, url: `data:${mime};base64,${buf.toString('base64')}` }
     }
     const t = BUILTIN_TEXTURES.find((x) => x.id === id) || BUILTIN_TEXTURES[0]
@@ -145,7 +148,9 @@ export function wallpaperDataUrl(
       const path = join(root, t.file)
       if (existsSync(path)) {
         const buf = readFileSync(path)
-        return { ok: true, url: `data:image/png;base64,${buf.toString('base64')}` }
+        const ext = extname(t.file).toLowerCase()
+        const mime = ext === '.png' ? 'image/png' : ext === '.webp' ? 'image/webp' : 'image/jpeg'
+        return { ok: true, url: `data:${mime};base64,${buf.toString('base64')}` }
       }
     }
     // renderer relative path fallback

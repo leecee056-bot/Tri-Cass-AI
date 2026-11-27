@@ -316,6 +316,21 @@ export default function App() {
   }
 
   async function newChat() {
+    // Reuse an existing empty "New Chat" instead of stacking duplicates
+    const idle = sessions.find(
+      (s) => !s.archived && s.title === 'New Chat' && (s.messages?.length || 0) === 0
+    )
+    if (idle) {
+      setActiveId(idle.id)
+      setMessages([])
+      setDraft(idle.draft || '')
+      setAttachments([])
+      setPanel('chat')
+      setAgentMode(idle.agentMode !== false)
+      if (idle.model) setModel(idle.model)
+      requestAnimationFrame(() => inputRef.current?.focus())
+      return
+    }
     const session = await window.triCass.createSession()
     setSessions((prev) => [session, ...prev])
     setActiveId(session.id)
@@ -477,9 +492,12 @@ export default function App() {
     <>
     <div id="app-wallpaper" className="app-wallpaper" hidden aria-hidden />
     <div className="app">
-      <header className="titlebar">
+      <header
+        className="titlebar"
+        onDoubleClick={async () => setMaximized(await window.triCass.windowMaximize())}
+      >
         <div className="titlebar-brand">
-          <div className="brand-mark" aria-hidden />
+          <img className="brand-mark" src="./brand/mark.png" alt="" width={22} height={22} aria-hidden />
           <span className="hide-sm">Tri Cass AI</span>
         </div>
         <div className="titlebar-center">
@@ -660,7 +678,7 @@ export default function App() {
                 <div className="messages-inner">
                   {!messages.length && (
                     <div className="empty" aria-label="Tri Cass AI home">
-                      <div className="empty-mark" aria-hidden />
+                      <img className="empty-mark" src="./brand/mascot-lg.png" alt="" width={96} height={96} />
                       <h2>Tri Cass AI</h2>
                       <p>Local chat that can write real projects on your machine.</p>
                       {!ollama.ok && (
@@ -1319,7 +1337,9 @@ export default function App() {
                       </p>
                       <div className="texture-grid" role="listbox" aria-label="Wallpaper textures">
                         {wallpapers.map((w) => {
-                          const selected = (config.wallpaperId || DEFAULT_WALLPAPER_ID) === w.id
+                          const selected =
+                            config.appearance === 'glass' &&
+                            (config.wallpaperId || DEFAULT_WALLPAPER_ID) === w.id
                           const thumb =
                             w.kind === 'builtin'
                               ? w.src

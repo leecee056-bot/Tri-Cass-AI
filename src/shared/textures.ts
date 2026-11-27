@@ -9,32 +9,32 @@ export const BUILTIN_TEXTURES: Array<{
   {
     id: 'digital',
     label: 'Digital',
-    file: 'digital.png',
-    description: 'Circuit grid with cyan pulses'
+    file: 'digital.jpg',
+    description: 'Circuit board photograph'
   },
   {
     id: 'wild-jungle',
     label: 'Wild / Jungle',
-    file: 'wild-jungle.png',
-    description: 'Canopy greens and organic noise'
+    file: 'wild-jungle.jpg',
+    description: 'Sunlit forest path photograph'
   },
   {
     id: 'clean-modern',
     label: 'Clean modern',
-    file: 'clean-modern.png',
-    description: 'Soft neutral gradient'
+    file: 'clean-modern.jpg',
+    description: 'Bright modern interior'
   },
   {
     id: 'geometric',
     label: 'Geometric',
-    file: 'geometric.png',
-    description: 'Chevron and triangle blocks'
+    file: 'geometric.jpg',
+    description: 'Architectural facade geometry'
   },
   {
     id: 'cosmic',
     label: 'Cosmic',
-    file: 'cosmic.png',
-    description: 'Deep-space nebula'
+    file: 'cosmic.jpg',
+    description: 'Deep starfield photograph'
   }
 ]
 

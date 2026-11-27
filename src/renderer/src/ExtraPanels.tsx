@@ -470,28 +470,35 @@ export function AboutPanel({
   return (
     <div className="messages panel-page">
       <div className="messages-inner">
-        <h2 style={{ fontFamily: 'var(--font-serif)', marginTop: 0 }}>About Tri Cass AI</h2>
-        <p>Version {version} · MIT License</p>
-        <p style={{ color: 'var(--text-muted)' }}>
-          Standalone local coding assistant. You don’t need to code — just ask. Updates ship as GitHub
-          Releases (portable zip / installer).
-        </p>
-        <h3>Attribution</h3>
-        <ul>
-          <li>figlet.js — FIGlet fonts for ASCII text</li>
-          <li>pngjs — local PNG encode/decode</li>
-          <li>Image backend: procedural-png@1 (built-in offline renderer)</li>
-          {attribution.map((a) => (
-            <li key={a}>{a}</li>
-          ))}
-        </ul>
-        <p style={{ color: 'var(--text-muted)', fontSize: '0.9rem' }}>
-          NSFW image prompts are blocked. Android release signing / Play credentials are refused.
-          Telemetry is off.
-        </p>
-        <button className="btn" type="button" onClick={onBack}>
-          Back to chat
-        </button>
+        <div className="panel-card about-card">
+          <div className="about-hero">
+            <img src="./brand/mascot-lg.png" alt="" width={120} height={120} />
+            <div>
+              <h2 style={{ fontFamily: 'var(--font-serif)', marginTop: 0, marginBottom: 6 }}>About Tri Cass AI</h2>
+              <p style={{ margin: 0 }}>Version {version} · MIT License</p>
+            </div>
+          </div>
+          <p style={{ color: 'var(--text-muted)', marginTop: 16 }}>
+            Standalone local coding assistant. You don’t need to code — just ask. Updates ship as GitHub
+            Releases (portable zip / installer).
+          </p>
+          <h3>Attribution</h3>
+          <ul>
+            <li>figlet.js — FIGlet fonts for ASCII text</li>
+            <li>pngjs — local PNG encode/decode</li>
+            <li>Image backend: procedural-png@1 (built-in offline renderer)</li>
+            {attribution.map((a) => (
+              <li key={a}>{a}</li>
+            ))}
+          </ul>
+          <p style={{ color: 'var(--text-muted)', fontSize: '0.9rem' }}>
+            NSFW image prompts are blocked. Android release signing / Play credentials are refused.
+            Telemetry is off.
+          </p>
+          <button className="btn" type="button" onClick={onBack}>
+            Back to chat
+          </button>
+        </div>
       </div>
     </div>
   )
