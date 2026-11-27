@@ -479,7 +479,7 @@ export default function App() {
     <div className="app">
       <header className="titlebar">
         <div className="titlebar-brand">
-          <div className="brand-mark" aria-hidden />
+          <img className="brand-mark" src="./brand/mark.png" alt="" width={22} height={22} aria-hidden />
           <span className="hide-sm">Tri Cass AI</span>
         </div>
         <div className="titlebar-center">
@@ -660,7 +660,7 @@ export default function App() {
                 <div className="messages-inner">
                   {!messages.length && (
                     <div className="empty" aria-label="Tri Cass AI home">
-                      <div className="empty-mark" aria-hidden />
+                      <img className="empty-mark" src="./brand/mascot-lg.png" alt="" width={96} height={96} />
                       <h2>Tri Cass AI</h2>
                       <p>Local chat that can write real projects on your machine.</p>
                       {!ollama.ok && (

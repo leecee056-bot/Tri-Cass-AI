@@ -11,7 +11,7 @@ import {
 } from 'electron'
 import { join } from 'node:path'
 import { randomUUID } from 'node:crypto'
-import { writeFileSync, readFileSync } from 'node:fs'
+import { writeFileSync, readFileSync, existsSync } from 'node:fs'
 import { MODEL_CATALOG, DEFAULT_MODEL_TAG } from '../shared/catalog'
 import type { ChatConfig, PullProgress } from '../shared/types'
 import { ollamaStatus, chatStream, chatOnce, pullModel, historyToPayload } from './services/ollama'
@@ -87,14 +87,58 @@ import {
 } from './services/wallpapers'
 
 let mainWindow: BrowserWindow | null = null
+let splashWindow: BrowserWindow | null = null
 let tray: Tray | null = null
 const abortControllers = new Map<string, AbortController>()
 let activePullId: string | null = null
 const VERSION = '0.1.0'
 
+function resolveAppIcon(): string {
+  const candidates = [
+    join(process.resourcesPath || '', 'icon.png'),
+    join(__dirname, '../../build/icon.png'),
+    join(process.cwd(), 'build/icon.png'),
+    join(__dirname, '../renderer/brand/icon-256.png')
+  ]
+  for (const p of candidates) {
+    if (existsSync(p)) return p
+  }
+  return candidates[0]
+}
+
+function createSplash(): BrowserWindow {
+  const splash = new BrowserWindow({
+    width: 460,
+    height: 280,
+    frame: false,
+    transparent: false,
+    resizable: false,
+    movable: true,
+    center: true,
+    show: false,
+    backgroundColor: '#0c0f14',
+    title: 'Tri Cass AI',
+    icon: resolveAppIcon(),
+    webPreferences: {
+      contextIsolation: true,
+      nodeIntegration: false,
+      sandbox: true
+    }
+  })
+  if (process.env.ELECTRON_RENDERER_URL) {
+    const base = process.env.ELECTRON_RENDERER_URL.replace(/\/?$/, '/')
+    void splash.loadURL(`${base}splash.html`)
+  } else {
+    void splash.loadFile(join(__dirname, '../renderer/splash.html'))
+  }
+  splash.once('ready-to-show', () => splash.show())
+  return splash
+}
+
 function createWindow(): void {
   const prefs = loadPrefs()
   const bounds = prefs.windowBounds
+  const icon = resolveAppIcon()
   mainWindow = new BrowserWindow({
     width: bounds?.width || 1280,
     height: bounds?.height || 860,
@@ -104,6 +148,7 @@ function createWindow(): void {
     minHeight: 640,
     backgroundColor: '#0f1115',
     title: 'Tri Cass AI',
+    icon,
     frame: false,
     titleBarStyle: 'hidden',
     trafficLightPosition: { x: 14, y: 14 },
@@ -124,7 +169,19 @@ function createWindow(): void {
     mainWindow.loadFile(join(__dirname, '../renderer/index.html'))
   }
 
-  mainWindow.once('ready-to-show', () => mainWindow?.show())
+  const revealMain = (): void => {
+    if (!mainWindow) return
+    mainWindow.show()
+    if (splashWindow && !splashWindow.isDestroyed()) {
+      splashWindow.close()
+      splashWindow = null
+    }
+  }
+
+  mainWindow.once('ready-to-show', () => {
+    // Let splash animation play (~1.5s) before revealing the shell
+    setTimeout(revealMain, splashWindow ? 1500 : 0)
+  })
 
   const persistBounds = (): void => {
     if (!mainWindow) return
@@ -188,9 +245,13 @@ app.whenReady().then(() => {
       }
     ])
   )
+  splashWindow = createSplash()
   createWindow()
   app.on('activate', () => {
-    if (BrowserWindow.getAllWindows().length === 0) createWindow()
+    if (BrowserWindow.getAllWindows().length === 0) {
+      splashWindow = createSplash()
+      createWindow()
+    }
   })
 })
 
@@ -719,8 +780,11 @@ ipcMain.handle('tray:set', async (_e, enabled: boolean) => {
   prefs.config = { ...prefs.config, trayEnabled: enabled }
   savePrefs(prefs)
   if (enabled && !tray) {
-    const img = nativeImage.createEmpty()
-    tray = new Tray(img)
+    const iconPath = resolveAppIcon()
+    const img = existsSync(iconPath)
+      ? nativeImage.createFromPath(iconPath)
+      : nativeImage.createEmpty()
+    tray = new Tray(img.isEmpty() ? nativeImage.createEmpty() : img)
     tray.setToolTip('Tri Cass AI')
     tray.setContextMenu(
       Menu.buildFromTemplate([
