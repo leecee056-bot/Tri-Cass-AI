@@ -10,6 +10,8 @@ import type {
 } from '../../shared/types'
 import { ramBadgeLabel } from '../../shared/catalog'
 import { AboutPanel, AsciiPanel, TemplatesPanel } from './ExtraPanels'
+import { BUILTIN_TEXTURES, DEFAULT_WALLPAPER_ID } from '../../shared/textures'
+import type { WallpaperRef } from '../../shared/types'
 
 type Snapshot = {
   ollama: OllamaStatus
@@ -39,14 +41,32 @@ const HINT_LINKS = [
   'Help me plan a local coding task'
 ]
 
-function applyTheme(appearance: ChatConfig['appearance'], fontSize: number) {
+function applyTheme(
+  appearance: ChatConfig['appearance'],
+  fontSize: number,
+  wallpaperUrl?: string | null
+) {
   const root = document.documentElement
-  let theme = appearance
+  let theme: string = appearance
   if (appearance === 'system') {
     theme = window.matchMedia('(prefers-color-scheme: light)').matches ? 'light' : 'dark'
   }
-  root.setAttribute('data-theme', theme === 'light' ? 'light' : 'dark')
+  if (theme === 'glass') {
+    root.setAttribute('data-theme', 'glass')
+  } else {
+    root.setAttribute('data-theme', theme === 'light' ? 'light' : 'dark')
+  }
   root.style.setProperty('--font-size', `${fontSize}px`)
+  const layer = document.getElementById('app-wallpaper')
+  if (layer) {
+    if (theme === 'glass' && wallpaperUrl) {
+      layer.style.backgroundImage = `url("${wallpaperUrl}")`
+      layer.hidden = false
+    } else {
+      layer.style.backgroundImage = ''
+      layer.hidden = true
+    }
+  }
 }
 
 function Markdown({ text }: { text: string }) {
@@ -109,6 +129,8 @@ export default function App() {
   const [selectMode, setSelectMode] = useState(false)
   const [selectedMsgIds, setSelectedMsgIds] = useState<string[]>([])
   const [chatFolders, setChatFolders] = useState<string[]>(['Inbox'])
+  const [wallpapers, setWallpapers] = useState<WallpaperRef[]>([])
+  const [wallpaperUrl, setWallpaperUrl] = useState<string | null>(null)
   const bottomRef = useRef<HTMLDivElement>(null)
   const listRef = useRef<HTMLDivElement>(null)
   const inputRef = useRef<HTMLTextAreaElement>(null)
@@ -212,8 +234,24 @@ export default function App() {
   }, [messages, agentLog])
 
   useEffect(() => {
-    if (config) applyTheme(config.appearance, config.fontSize)
-  }, [config])
+    if (!config) return
+    applyTheme(config.appearance, config.fontSize, wallpaperUrl)
+  }, [config, wallpaperUrl])
+
+  useEffect(() => {
+    if (!config) return
+    void (async () => {
+      const list = (await window.triCass.wallpapersList()) as WallpaperRef[]
+      setWallpapers(list)
+      const id = config.wallpaperId || DEFAULT_WALLPAPER_ID
+      const res = (await window.triCass.wallpaperDataUrl(id)) as { ok: boolean; url?: string }
+      if (res.ok && res.url) setWallpaperUrl(res.url)
+      else {
+        const builtin = BUILTIN_TEXTURES.find((t) => t.id === id) || BUILTIN_TEXTURES[0]
+        setWallpaperUrl(`./textures/${builtin.file}`)
+      }
+    })()
+  }, [config?.wallpaperId, config?.appearance, config?.customWallpaperIds?.join(',')])
 
   async function boot() {
     const snap = (await window.triCass.getSnapshot()) as Snapshot
@@ -225,7 +263,7 @@ export default function App() {
     setModel(snap.selectedModel || 'qwen2.5-coder:3b')
     setConfig(snap.config)
     setCatalog(snap.catalog)
-    applyTheme(snap.config.appearance, snap.config.fontSize)
+    applyTheme(snap.config.appearance, snap.config.fontSize, null)
     const active = snap.sessions.find((s) => s.id === snap.activeSessionId)
     loadMessages(active)
     setDraft(active?.draft || '')
@@ -436,6 +474,8 @@ export default function App() {
   }
 
   return (
+    <>
+    <div id="app-wallpaper" className="app-wallpaper" hidden aria-hidden />
     <div className="app">
       <header className="titlebar">
         <div className="titlebar-brand">
@@ -1249,19 +1289,144 @@ export default function App() {
               <div className="messages-inner">
                 <h2 style={{ fontFamily: 'var(--font-serif)', marginTop: 0 }}>Settings</h2>
                 <div className="settings-grid">
-                  <h3>General</h3>
+                  <h3>Appearance</h3>
                   <div className="field">
-                    <label><span>Appearance</span></label>
-                    <select value={config.appearance} onChange={(e) => void saveConfig({ ...config, appearance: e.target.value as ChatConfig['appearance'] })}>
+                    <label><span>Theme</span></label>
+                    <select
+                      value={config.appearance}
+                      onChange={(e) => {
+                        const appearance = e.target.value as ChatConfig['appearance']
+                        void saveConfig({
+                          ...config,
+                          appearance,
+                          wallpaperId: config.wallpaperId || DEFAULT_WALLPAPER_ID
+                        })
+                      }}
+                    >
                       <option value="system">System</option>
                       <option value="dark">Dark</option>
                       <option value="light">Light</option>
+                      <option value="glass">Glass</option>
                     </select>
                   </div>
+                  <div className="field">
+                      <label>
+                        <span>Glass wallpaper / texture</span>
+                      </label>
+                      <p style={{ color: 'var(--text-muted)', fontSize: '0.85rem', marginTop: 0 }}>
+                        Frosted glass over a texture. Pick a built-in look or add your own image.
+                        {config.appearance !== 'glass' ? ' Selecting a texture switches to Glass.' : ''}
+                      </p>
+                      <div className="texture-grid" role="listbox" aria-label="Wallpaper textures">
+                        {wallpapers.map((w) => {
+                          const selected = (config.wallpaperId || DEFAULT_WALLPAPER_ID) === w.id
+                          const thumb =
+                            w.kind === 'builtin'
+                              ? w.src
+                              : wallpaperUrl && config.wallpaperId === w.id
+                                ? wallpaperUrl
+                                : undefined
+                          return (
+                            <button
+                              key={w.id}
+                              type="button"
+                              className={`texture-card ${selected ? 'selected' : ''}`}
+                              role="option"
+                              aria-selected={selected}
+                              onClick={async () => {
+                                const next = { ...config, appearance: 'glass' as const, wallpaperId: w.id }
+                                await saveConfig(next)
+                                const res = (await window.triCass.wallpaperDataUrl(w.id)) as {
+                                  ok: boolean
+                                  url?: string
+                                }
+                                if (res.ok && res.url) setWallpaperUrl(res.url)
+                                flash(`Wallpaper: ${w.label}`)
+                              }}
+                            >
+                              {thumb ? (
+                                <img src={thumb} alt="" className="texture-thumb" />
+                              ) : (
+                                <div className="texture-thumb" />
+                              )}
+                              <figcaption>
+                                {w.label}
+                                <div className="muted">{w.kind === 'builtin' ? 'Built-in' : 'Custom'}</div>
+                              </figcaption>
+                            </button>
+                          )
+                        })}
+                      </div>
+                      <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', marginTop: 10 }}>
+                        <button
+                          className="btn primary"
+                          type="button"
+                          onClick={async () => {
+                            const res = (await window.triCass.wallpaperAdd()) as {
+                              ok: boolean
+                              wallpaper?: WallpaperRef
+                              error?: string
+                            }
+                            if (!res.ok) {
+                              flash(res.error || 'Cancelled')
+                              return
+                            }
+                            const list = (await window.triCass.wallpapersList()) as WallpaperRef[]
+                            setWallpapers(list)
+                            if (res.wallpaper) {
+                              await saveConfig({
+                                ...config,
+                                appearance: 'glass',
+                                wallpaperId: res.wallpaper.id,
+                                customWallpaperIds: [
+                                  ...(config.customWallpaperIds || []),
+                                  res.wallpaper.id
+                                ]
+                              })
+                              const url = (await window.triCass.wallpaperDataUrl(res.wallpaper.id)) as {
+                                ok: boolean
+                                url?: string
+                              }
+                              if (url.ok && url.url) setWallpaperUrl(url.url)
+                              flash(`Added ${res.wallpaper.label}`)
+                            }
+                          }}
+                        >
+                          Add custom wallpaper
+                        </button>
+                        {(config.wallpaperId || '').startsWith('custom:') ? (
+                          <button
+                            className="btn danger"
+                            type="button"
+                            onClick={async () => {
+                              const id = config.wallpaperId!
+                              if (!confirm('Remove this custom wallpaper?')) return
+                              await window.triCass.wallpaperRemove(id)
+                              const list = (await window.triCass.wallpapersList()) as WallpaperRef[]
+                              setWallpapers(list)
+                              await saveConfig({
+                                ...config,
+                                wallpaperId: DEFAULT_WALLPAPER_ID,
+                                customWallpaperIds: (config.customWallpaperIds || []).filter((x) => x !== id)
+                              })
+                              const url = (await window.triCass.wallpaperDataUrl(DEFAULT_WALLPAPER_ID)) as {
+                                ok: boolean
+                                url?: string
+                              }
+                              if (url.ok && url.url) setWallpaperUrl(url.url)
+                              flash('Removed')
+                            }}
+                          >
+                            Remove selected custom
+                          </button>
+                        ) : null}
+                      </div>
+                    </div>
                   <div className="field">
                     <label><span>Font size</span><span>{config.fontSize}px</span></label>
                     <input type="range" min={13} max={18} value={config.fontSize} onChange={(e) => void saveConfig({ ...config, fontSize: Number(e.target.value) })} />
                   </div>
+                  <h3>General</h3>
                   <div className="field">
                     <label><span>Custom instructions</span></label>
                     <textarea rows={4} value={config.systemPrompt} onChange={(e) => void saveConfig({ ...config, systemPrompt: e.target.value })} />
@@ -1489,5 +1654,6 @@ export default function App() {
 
       {toast ? <div className="toast">{toast}</div> : null}
     </div>
+    </>
   )
 }

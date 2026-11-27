@@ -61,12 +61,17 @@
     },
     "files": [
       "out/**/*",
-      "build/icon.png"
+      "build/icon.png",
+      "build/textures/**/*"
     ],
     "extraResources": [
       {
         "from": "build/icon.png",
         "to": "icon.png"
+      },
+      {
+        "from": "build/textures",
+        "to": "textures"
       }
     ],
     "icon": "build/icon.png",

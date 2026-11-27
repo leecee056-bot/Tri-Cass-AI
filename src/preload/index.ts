@@ -96,6 +96,10 @@ export type TriCassAPI = {
   workspaceCreateFolder: (name: string) => Promise<string>
   traySet: (enabled: boolean) => Promise<boolean>
   configReset: () => Promise<ChatConfig>
+  wallpapersList: () => Promise<unknown>
+  wallpaperAdd: () => Promise<unknown>
+  wallpaperRemove: (id: string) => Promise<unknown>
+  wallpaperDataUrl: (id: string) => Promise<unknown>
   on: (channel: string, handler: (payload: unknown) => void) => () => void
 }
 
@@ -194,6 +198,10 @@ const api: TriCassAPI = {
   workspaceCreateFolder: (name) => ipcRenderer.invoke('workspace:createFolder', name),
   traySet: (enabled) => ipcRenderer.invoke('tray:set', enabled),
   configReset: () => ipcRenderer.invoke('config:reset'),
+  wallpapersList: () => ipcRenderer.invoke('wallpapers:list'),
+  wallpaperAdd: () => ipcRenderer.invoke('wallpapers:add'),
+  wallpaperRemove: (id) => ipcRenderer.invoke('wallpapers:remove', id),
+  wallpaperDataUrl: (id) => ipcRenderer.invoke('wallpapers:dataUrl', id),
   on: (channel, handler) => {
     if (!allowed.has(channel)) return () => undefined
     const listener = (_event: Electron.IpcRendererEvent, payload: unknown) => handler(payload)

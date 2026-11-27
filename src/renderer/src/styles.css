@@ -44,6 +44,137 @@
   color-scheme: light;
 }
 
+/* Glass: frosted panels over a wallpaper layer */
+[data-theme='glass'] {
+  --bg: transparent;
+  --bg-elevated: rgba(14, 18, 26, 0.72);
+  --bg-soft: rgba(255, 255, 255, 0.1);
+  --sidebar: rgba(10, 14, 20, 0.68);
+  --border: rgba(255, 255, 255, 0.18);
+  --border-strong: rgba(255, 255, 255, 0.3);
+  --text: #f3f6fb;
+  --text-muted: rgba(230, 236, 245, 0.82);
+  --text-faint: rgba(230, 236, 245, 0.58);
+  --accent: #5dcf94;
+  --accent-soft: rgba(93, 207, 148, 0.2);
+  --accent-hover: #78e0a8;
+  --user-bg: rgba(255, 255, 255, 0.14);
+  --shadow: 0 18px 50px rgba(0, 0, 0, 0.4);
+  --glass-blur: 22px;
+  color-scheme: dark;
+}
+
+.app-wallpaper {
+  position: fixed;
+  inset: 0;
+  z-index: 0;
+  pointer-events: none;
+  background-color: #0b0e14;
+  background-size: cover;
+  background-position: center;
+  background-repeat: no-repeat;
+  transform: scale(1.02);
+}
+
+.app-wallpaper::after {
+  content: '';
+  position: absolute;
+  inset: 0;
+  background: linear-gradient(
+    160deg,
+    rgba(8, 12, 18, 0.35),
+    rgba(8, 12, 18, 0.55) 45%,
+    rgba(8, 12, 18, 0.4)
+  );
+}
+
+[data-theme='glass'] .app {
+  position: relative;
+  z-index: 1;
+  background: transparent;
+}
+
+[data-theme='glass'] .titlebar,
+[data-theme='glass'] .sidebar,
+[data-theme='glass'] .composer,
+[data-theme='glass'] .thread-header,
+[data-theme='glass'] .catalog-row,
+[data-theme='glass'] .template-card,
+[data-theme='glass'] .slash-menu,
+[data-theme='glass'] .toast,
+[data-theme='glass'] .more-pop {
+  background: var(--bg-elevated);
+  backdrop-filter: blur(var(--glass-blur)) saturate(1.25);
+  -webkit-backdrop-filter: blur(var(--glass-blur)) saturate(1.25);
+}
+
+[data-theme='glass'] .sidebar {
+  border-right: 1px solid var(--border);
+}
+
+[data-theme='glass'] .main {
+  background: transparent;
+}
+
+[data-theme='glass'] .messages {
+  background: transparent;
+}
+
+[data-theme='glass'] .composer {
+  border: 1px solid var(--border);
+}
+
+[data-theme='glass'] .search,
+[data-theme='glass'] .field input,
+[data-theme='glass'] .field textarea,
+[data-theme='glass'] .field select,
+[data-theme='glass'] .model-select {
+  background: rgba(0, 0, 0, 0.28);
+  backdrop-filter: blur(10px);
+  -webkit-backdrop-filter: blur(10px);
+}
+
+.texture-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(140px, 1fr));
+  gap: 10px;
+}
+
+.texture-card {
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  overflow: hidden;
+  background: var(--bg-elevated);
+  cursor: pointer;
+  text-align: left;
+  padding: 0;
+  display: grid;
+}
+
+.texture-card.selected {
+  border-color: var(--accent);
+  box-shadow: 0 0 0 1px color-mix(in srgb, var(--accent) 50%, transparent);
+}
+
+.texture-card img,
+.texture-thumb {
+  width: 100%;
+  height: 72px;
+  object-fit: cover;
+  display: block;
+  background: #111;
+}
+
+.texture-card figcaption {
+  padding: 8px 10px;
+  font-size: 0.82rem;
+}
+
+.texture-card .muted {
+  color: var(--text-muted);
+  font-size: 0.72rem;
+}
+
 * {
   box-sizing: border-box;
 }

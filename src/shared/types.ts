@@ -84,7 +84,24 @@ export type AgentResult = {
   checkpointId?: string
 }
 
-export type Appearance = 'system' | 'light' | 'dark'
+export type Appearance = 'system' | 'light' | 'dark' | 'glass'
+
+/** Built-in Glass wallpaper ids */
+export type BuiltinTextureId =
+  | 'digital'
+  | 'wild-jungle'
+  | 'clean-modern'
+  | 'geometric'
+  | 'cosmic'
+
+export type WallpaperRef = {
+  id: string
+  label: string
+  /** builtin | custom */
+  kind: 'builtin' | 'custom'
+  /** Renderer-resolvable URL or path hint */
+  src: string
+}
 
 export type ChatConfig = {
   temperature: number
@@ -119,6 +136,10 @@ export type ChatConfig = {
   /** Show voice button (only when implemented) */
   voiceEnabled?: boolean
   kbScope?: 'chat' | 'workspace'
+  /** Active wallpaper when appearance is glass (builtin id or custom:…) */
+  wallpaperId?: string
+  /** Custom wallpaper ids the user added */
+  customWallpaperIds?: string[]
 }
 
 export type WorkspaceInfo = {
