@@ -79,6 +79,12 @@ import {
 import { createCheckpoint, listCheckpoints, rollbackCheckpoint } from './services/checkpoints'
 import { buildDiagnostics, detectRamGb, detectFreeDiskRough } from './services/diagnostics'
 import { webSearch, fetchUrl } from './services/webFetch'
+import {
+  listWallpapers,
+  addCustomWallpaper,
+  removeCustomWallpaper,
+  wallpaperDataUrl
+} from './services/wallpapers'
 
 let mainWindow: BrowserWindow | null = null
 let tray: Tray | null = null
@@ -734,4 +740,30 @@ ipcMain.handle('config:reset', async () => {
   prefs.config = { ...DEFAULT_CONFIG }
   savePrefs(prefs)
   return prefs.config
+})
+
+ipcMain.handle('wallpapers:list', async () => listWallpapers())
+ipcMain.handle('wallpapers:add', async () => {
+  const res = await dialog.showOpenDialog(mainWindow!, {
+    title: 'Add wallpaper / texture',
+    properties: ['openFile'],
+    filters: [{ name: 'Images', extensions: ['png', 'jpg', 'jpeg', 'webp', 'gif'] }]
+  })
+  if (res.canceled || !res.filePaths[0]) return { ok: false, error: 'cancelled' }
+  return addCustomWallpaper(res.filePaths[0])
+})
+ipcMain.handle('wallpapers:remove', async (_e, id: string) => removeCustomWallpaper(id))
+ipcMain.handle('wallpapers:dataUrl', async (_e, id: string) => {
+  const roots = [
+    join(__dirname, '../renderer/textures'),
+    join(process.resourcesPath || '', 'textures'),
+    join(app.getAppPath(), 'src/renderer/public/textures'),
+    join(process.cwd(), 'src/renderer/public/textures'),
+    join(process.cwd(), 'build/textures')
+  ]
+  for (const root of roots) {
+    const hit = wallpaperDataUrl(id, root)
+    if (hit.ok && hit.url?.startsWith('data:')) return hit
+  }
+  return wallpaperDataUrl(id)
 })
