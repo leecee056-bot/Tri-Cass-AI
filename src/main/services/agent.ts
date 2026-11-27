@@ -9,6 +9,7 @@ import {
 } from './grammar'
 import {
   detectScaffoldIntent,
+  extractProjectTitle,
   scaffoldApp,
   scaffoldWebsite
 } from './templates'
@@ -106,10 +107,10 @@ export async function runCodingAgent(opts: AgentRunOpts): Promise<AgentResult> {
 
   if (kind) {
     emit(steps, opts.onStep, 'plan', `Detected intent: create ${kind}`)
-    const titleMatch = opts.prompt.match(/(?:called|named|titled)\s+["']?([^"'\n.]+)["']?/i)
-    const title =
-      titleMatch?.[1]?.trim() ||
-      (kind === 'website' ? 'Tri Cass Website' : 'Tri Cass App')
+    const title = extractProjectTitle(
+      opts.prompt,
+      kind === 'website' ? 'Tri Cass Website' : 'Tri Cass App'
+    )
 
     const scaffold = kind === 'website' ? scaffoldWebsite(title) : scaffoldApp(title)
     filesCreated.push(...scaffold.files)
@@ -175,11 +176,18 @@ export async function runCodingAgent(opts: AgentRunOpts): Promise<AgentResult> {
     }
 
     emit(steps, opts.onStep, 'done', `Created ${kind} at ${scaffold.projectPath}`)
+    const tree = [...new Set(filesCreated)]
+      .map((f) => `- \`${f.replace(scaffold.projectPath + '/', '')}\``)
+      .join('\n')
+    const howTo =
+      kind === 'website'
+        ? 'Open `index.html` in a browser, or run `python3 -m http.server 4173` in the project folder.'
+        : 'Run `npm start` (and `npm test`) in the project folder.'
     return {
       ok: true,
       projectPath: scaffold.projectPath,
       steps,
-      message: `Created ${kind} project with ${filesCreated.length} files at:\n${scaffold.projectPath}`,
+      message: `Created **${title}** (${kind}) with ${filesCreated.length} files at \`${scaffold.projectPath}\`.\n\n**Files**\n${tree}\n\n${howTo}`,
       filesCreated: [...new Set(filesCreated)]
     }
   }

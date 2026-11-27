@@ -32,11 +32,10 @@ type UiMessage = {
 
 type Panel = 'chat' | 'models' | 'knowledge' | 'workspace' | 'settings' | 'about'
 
-const EXAMPLES = [
-  'Make a website called Local Launch',
-  'Make an app called Notes CLI',
-  'Plan a small Python scraper for local files',
-  'Summarise the knowledge attached to this chat'
+const HINT_LINKS = [
+  'Create a website in my workspace',
+  'Create a Node app with tests',
+  'Help me plan a local coding task'
 ]
 
 function applyTheme(appearance: ChatConfig['appearance'], fontSize: number) {
@@ -93,6 +92,8 @@ export default function App() {
   const [toast, setToast] = useState('')
   const [maximized, setMaximized] = useState(false)
   const [showJump, setShowJump] = useState(false)
+  const [slashOpen, setSlashOpen] = useState(false)
+  const [dragOver, setDragOver] = useState(false)
   const bottomRef = useRef<HTMLDivElement>(null)
   const listRef = useRef<HTMLDivElement>(null)
   const inputRef = useRef<HTMLTextAreaElement>(null)
@@ -425,6 +426,7 @@ export default function App() {
                 About
               </button>
             </div>
+            <div className="sidebar-footer" title={workspace.root}>{workspace.root || 'No workspace'}</div>
             <div className="chat-list">
               {visibleSessions.map((s) => (
                 <div key={s.id} className={`chat-item ${s.id === activeId ? 'active' : ''}`} role="button" tabIndex={0}
@@ -505,12 +507,28 @@ export default function App() {
               >
                 <div className="messages-inner">
                   {!messages.length && (
-                    <div className="empty">
+                    <div className="empty" aria-label="Tri Cass AI home">
+                      <div className="empty-mark" aria-hidden />
                       <h2>Tri Cass AI</h2>
-                      <p>Local coding assistant for your PC. Chat, attach knowledge, or ask it to make a website or app on disk.</p>
-                      <div className="examples">
-                        {EXAMPLES.map((ex) => (
-                          <button key={ex} type="button" onClick={() => void send('chat', ex)}>{ex}</button>
+                      <p>Local chat that can write real projects on your machine.</p>
+                      {!ollama.ok && (
+                        <div className="banner warn">
+                          Ollama is offline. Install from <strong>ollama.com</strong>, run <code>ollama serve</code>, then download a model from Models.
+                        </div>
+                      )}
+                      {ollama.ok && !ollama.models.length && (
+                        <div className="banner">
+                          No models installed yet.{' '}
+                          <button type="button" className="text-link" onClick={() => setPanel('models')}>
+                            Download the recommended model
+                          </button>
+                        </div>
+                      )}
+                      <div className="hint-links">
+                        {HINT_LINKS.map((ex) => (
+                          <button key={ex} type="button" className="text-link" onClick={() => queueDraft(ex)}>
+                            {ex}
+                          </button>
                         ))}
                       </div>
                     </div>
@@ -564,14 +582,17 @@ export default function App() {
                   </div>
                 )}
                 <div
-                  className="composer"
-                  onDragOver={(e) => e.preventDefault()}
+                  className={`composer ${dragOver ? 'drag' : ''}`}
+                  onDragOver={(e) => { e.preventDefault(); setDragOver(true) }}
+                  onDragLeave={() => setDragOver(false)}
                   onDrop={(e) => {
                     e.preventDefault()
+                    setDragOver(false)
                     const files = [...e.dataTransfer.files].map((f) => (f as File & { path?: string }).path || f.name)
                     setAttachments((prev) => [...prev, ...files])
                   }}
                 >
+                  {dragOver && <div className="drop-overlay">Drop to attach</div>}
                   {attachments.length > 0 && (
                     <div className="attachments">
                       {attachments.map((a) => (
@@ -582,21 +603,58 @@ export default function App() {
                       ))}
                     </div>
                   )}
+                  {slashOpen && (
+                    <div className="slash-menu" role="listbox">
+                      {[
+                        { cmd: '/plan ', label: 'Plan', desc: 'Numbered implementation plan' },
+                        { cmd: '/code ', label: 'Code', desc: 'Agent writes files in workspace' },
+                        { cmd: '/kb ', label: 'Research', desc: 'Answer using attached knowledge' }
+                      ].map((item) => (
+                        <button
+                          key={item.cmd}
+                          type="button"
+                          className="slash-item"
+                          onClick={() => {
+                            queueDraft(item.cmd)
+                            setSlashOpen(false)
+                            inputRef.current?.focus()
+                          }}
+                        >
+                          <strong>{item.label}</strong>
+                          <span>{item.desc}</span>
+                        </button>
+                      ))}
+                    </div>
+                  )}
                   <textarea
                     ref={inputRef}
                     value={draft}
-                    placeholder="Message Tri Cass AI — local chat that can create websites & apps…"
-                    onChange={(e) => queueDraft(e.target.value)}
+                    rows={1}
+                    placeholder="Message Tri Cass AI…"
+                    onChange={(e) => {
+                      const v = e.target.value
+                      queueDraft(v)
+                      setSlashOpen(v === '/' || /^\/[a-z]*$/i.test(v))
+                      e.target.style.height = 'auto'
+                      e.target.style.height = `${Math.min(e.target.scrollHeight, 200)}px`
+                    }}
                     onPaste={(e) => {
-                      const items = e.clipboardData?.items
-                      if (!items) return
-                      for (const item of items) {
-                        if (item.type.startsWith('image/')) {
-                          flash('Image paste noted — attach files for durable KB ingest')
-                        }
+                      const text = e.clipboardData?.getData('text') || ''
+                      if (text.length > 8000 && !confirm('Paste a large block of text?')) {
+                        e.preventDefault()
                       }
                     }}
                     onKeyDown={(e) => {
+                      if (e.key === 'Escape' && busy) {
+                        e.preventDefault()
+                        void stop()
+                        return
+                      }
+                      if ((e.metaKey || e.ctrlKey) && e.key === 'Enter') {
+                        e.preventDefault()
+                        void send('chat')
+                        return
+                      }
                       if (!config.enterToSend) return
                       if (e.key === 'Enter' && !e.shiftKey) {
                         e.preventDefault()
@@ -611,24 +669,31 @@ export default function App() {
                         const files = await window.triCass.pickFiles()
                         if (files.length) setAttachments((p) => [...p, ...files])
                       }}>Attach</button>
-                      <button className={`tool-toggle ${agentMode ? 'on' : ''}`} type="button" onClick={() => setAgentMode((v) => !v)}>
-                        Agent
+                      <button
+                        className={`tool-toggle ${agentMode ? 'on' : ''}`}
+                        type="button"
+                        title="When on, Tri Cass AI can create and edit files in your workspace"
+                        onClick={() => setAgentMode((v) => !v)}
+                      >
+                        Write files {agentMode ? 'on' : 'off'}
                       </button>
-                      <button className={`tool-toggle ${useKb ? 'on' : ''}`} type="button" onClick={() => setUseKb((v) => !v)}>
-                        KB
+                      <button
+                        className={`tool-toggle ${useKb ? 'on' : ''}`}
+                        type="button"
+                        onClick={() => setUseKb((v) => !v)}
+                      >
+                        KB{(activeSession?.kbPaths?.length ? ` · ${activeSession.kbPaths.length}` : '')}
                       </button>
-                      <button className="tool-toggle" type="button" onClick={() => void send('summarise', draft || 'Summarise our conversation so far')}>Summarise</button>
-                      <button className="tool-toggle" type="button" onClick={() => void send('plan', draft || 'Make a plan for this project')}>Plan</button>
-                      <button className="tool-toggle" type="button" onClick={() => void send('research', draft || 'Research using the knowledge base')}>Research</button>
+                      <button className="tool-toggle" type="button" onClick={() => setSlashOpen((v) => !v)} title="Slash commands">/</button>
                     </div>
                     {busy ? (
-                      <button className="send stop" type="button" title="Stop" onClick={() => void stop()}>■</button>
+                      <button className="send stop" type="button" title="Stop" onClick={() => void stop()}>Stop</button>
                     ) : (
-                      <button className="send" type="button" title="Send" disabled={!draft.trim() && !attachments.length} onClick={() => void send('chat')}>↑</button>
+                      <button className="send" type="button" title="Send" disabled={!draft.trim() && !attachments.length} onClick={() => void send('chat')}>Send</button>
                     )}
                   </div>
                 </div>
-                <div className="hint">Enter to send · Shift+Enter for newline · /plan /code /kb · data stays on this machine</div>
+                <div className="hint">Enter send · Shift+Enter newline · / for commands · local only</div>
               </div>
             </>
           )}
@@ -732,8 +797,8 @@ export default function App() {
                 <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
                   <button className="btn primary" type="button" onClick={async () => setWorkspace(await window.triCass.pickWorkspace() as WorkspaceInfo)}>Choose folder</button>
                   <button className="btn" type="button" onClick={() => void window.triCass.openWorkspace()}>Open in explorer</button>
-                  <button className="btn" type="button" onClick={() => void send('build', 'Make a website called Quick Site')}>Create website</button>
-                  <button className="btn" type="button" onClick={() => void send('build', 'Make an app called Quick App')}>Create app</button>
+                  <button className="btn" type="button" onClick={() => { setPanel('chat'); queueDraft('Create a website in my workspace'); inputRef.current?.focus() }}>New website…</button>
+                  <button className="btn" type="button" onClick={() => { setPanel('chat'); queueDraft('Create a Node app with tests'); inputRef.current?.focus() }}>New app…</button>
                 </div>
                 <h3 style={{ marginTop: 24 }}>Projects</h3>
                 <ul>

@@ -19,7 +19,7 @@ export const DEFAULT_CONFIG: ChatConfig = {
   codeInterpreter: true,
   imageGeneration: false,
   fileAnalysis: true,
-  appearance: 'system',
+  appearance: 'dark',
   fontSize: 15,
   systemPrompt:
     'You are Tri Cass AI, a local coding assistant. Be practical and concise. Help plan, research, and create software on this machine.',
