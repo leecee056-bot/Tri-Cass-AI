@@ -1,8 +1,8 @@
 {
   "name": "tri-cass-ai",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "private": false,
-  "description": "Tri Cass AI — standalone local coding assistant for household PCs",
+  "description": "Tri Cass AI \u2014 standalone local coding assistant for household PCs",
   "main": "./out/main/index.js",
   "author": "Lee Cee",
   "license": "MIT",
@@ -54,7 +54,7 @@
   "build": {
     "appId": "ai.tricass.local",
     "productName": "Tri Cass AI",
-    "copyright": "Copyright © Tri-Cass",
+    "copyright": "Copyright \u00a9 Tri-Cass",
     "directories": {
       "output": "release",
       "buildResources": "build"
