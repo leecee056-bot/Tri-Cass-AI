@@ -35,7 +35,8 @@ import {
   deleteSession,
   renameSession,
   clearAllSessions,
-  setDraft
+  setDraft,
+  resetSessionsToEmpty
 } from './services/chatStore'
 import { loadPrefs, savePrefs, DEFAULT_CONFIG } from './services/paths'
 
@@ -284,6 +285,8 @@ ipcMain.handle('sessions:clearAll', async () => {
   clearAllSessions()
   return createSession('New Chat')
 })
+
+ipcMain.handle('sessions:resetFresh', async () => resetSessionsToEmpty())
 ipcMain.handle('sessions:setDraft', async (_e, id: string, draft: string) => {
   setDraft(id, draft)
   return true

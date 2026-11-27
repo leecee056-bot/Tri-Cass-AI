@@ -7,14 +7,37 @@ function ensure(): void {
   mkdirSync(userDataRoot(), { recursive: true })
 }
 
+/** Titles/phrases from old QA runs that must never reappear as seed history. */
+const BANNED_CHAT_RE =
+  /\b(v2\s*demo|demo\s*site|local\s*launch|quick\s*site|quick\s*app|open\s*launch)\b/i
+
+function isBannedSession(session: ChatSession): boolean {
+  if (BANNED_CHAT_RE.test(session.title || '')) return true
+  if (BANNED_CHAT_RE.test(session.draft || '')) return true
+  return (session.messages || []).some(
+    (m) => BANNED_CHAT_RE.test(m.content || '') || BANNED_CHAT_RE.test(m.meta?.paths?.join(' ') || '')
+  )
+}
+
 export function loadSessions(): ChatSession[] {
   try {
     if (!existsSync(sessionsPath())) return []
     const raw = JSON.parse(readFileSync(sessionsPath(), 'utf8')) as ChatSession[]
-    return Array.isArray(raw) ? raw : []
+    if (!Array.isArray(raw)) return []
+    const cleaned = raw.filter((s) => s && !isBannedSession(s))
+    if (cleaned.length !== raw.length) {
+      saveSessions(cleaned)
+    }
+    return cleaned
   } catch {
     return []
   }
+}
+
+/** Wipe all chats (fresh empty slate). */
+export function resetSessionsToEmpty(): ChatSession {
+  saveSessions([])
+  return createSession('New Chat')
 }
 
 export function saveSessions(sessions: ChatSession[]): void {
