@@ -1067,6 +1067,113 @@ button {
   color: #e07070;
 }
 
+::selection {
+  background: color-mix(in srgb, var(--accent) 35%, transparent);
+  color: var(--text);
+}
+
+.avatar-initial {
+  width: 22px;
+  height: 22px;
+  border-radius: 50%;
+  display: inline-grid;
+  place-items: center;
+  background: var(--accent-soft);
+  color: var(--accent);
+  font-size: 0.7rem;
+  font-weight: 700;
+}
+
+.bubble blockquote {
+  margin: 0.5rem 0;
+  padding: 0.4rem 0.8rem;
+  border-left: 3px solid var(--accent);
+  color: var(--text-muted);
+}
+
+.bubble table {
+  border-collapse: collapse;
+  width: 100%;
+  font-size: 0.9rem;
+}
+
+.bubble th,
+.bubble td {
+  border: 1px solid var(--border);
+  padding: 6px 8px;
+}
+
+.bubble pre code {
+  font-family: var(--font-mono, "IBM Plex Mono", ui-monospace, monospace);
+}
+
+.skeleton {
+  height: 14px;
+  border-radius: 6px;
+  background: linear-gradient(90deg, var(--bg), var(--bg-elevated), var(--bg));
+  background-size: 200% 100%;
+  animation: shimmer 1.2s linear infinite;
+  margin: 8px 0;
+}
+
+@keyframes shimmer {
+  to {
+    background-position: -200% 0;
+  }
+}
+
+.more-menu {
+  position: relative;
+}
+
+.more-menu summary {
+  list-style: none;
+  cursor: pointer;
+}
+
+.more-pop {
+  position: absolute;
+  right: 0;
+  top: 110%;
+  min-width: 140px;
+  background: var(--bg-elevated);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  padding: 6px;
+  display: grid;
+  gap: 4px;
+  z-index: 20;
+}
+
+.more-pop button {
+  background: transparent;
+  border: 0;
+  text-align: left;
+  color: var(--text);
+  padding: 6px 8px;
+  border-radius: 6px;
+  cursor: pointer;
+}
+
+.more-pop button:hover {
+  background: var(--accent-soft);
+}
+
+.lightbox {
+  position: fixed;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.55);
+  display: grid;
+  place-items: center;
+  z-index: 80;
+  color: #fff;
+}
+
+.agent-steps.failed {
+  border-left-color: #e07070;
+  background: color-mix(in srgb, #e07070 12%, transparent);
+}
+
 @media (max-width: 960px) {
   .shell {
     --sidebar-w: 240px;

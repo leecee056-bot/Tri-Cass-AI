@@ -1,14 +1,23 @@
 import type { ChatMessage, OllamaModel, OllamaStatus, PullProgress } from '../../shared/types'
-
-const OLLAMA = process.env.OLLAMA_HOST?.replace(/\/$/, '') || 'http://127.0.0.1:11434'
+import { loadPrefs } from './paths'
 
 export function ollamaBase(): string {
-  return OLLAMA
+  const fromEnv = process.env.OLLAMA_HOST?.replace(/\/$/, '')
+  if (fromEnv) return fromEnv
+  try {
+    const url = loadPrefs().config.ollamaUrl?.replace(/\/$/, '')
+    if (url) return url
+  } catch {
+    /* ignore */
+  }
+  return 'http://127.0.0.1:11434'
 }
+
+const OLLAMA = (): string => ollamaBase()
 
 export async function ollamaStatus(): Promise<OllamaStatus> {
   try {
-    const res = await fetch(`${OLLAMA}/api/tags`, { signal: AbortSignal.timeout(2500) })
+    const res = await fetch(`${OLLAMA()}/api/tags`, { signal: AbortSignal.timeout(2500) })
     if (!res.ok) {
       return { ok: false, detail: `Ollama HTTP ${res.status}`, models: [] }
     }
@@ -20,11 +29,11 @@ export async function ollamaStatus(): Promise<OllamaStatus> {
       size: m.size,
       modifiedAt: m.modified_at
     }))
-    return { ok: true, detail: `Connected · ${OLLAMA}`, models }
+    return { ok: true, detail: `Connected · ${OLLAMA()}`, models }
   } catch {
     return {
       ok: false,
-      detail: `Ollama unreachable at ${OLLAMA}. Install from https://ollama.com and start it.`,
+      detail: `Ollama unreachable at ${OLLAMA()}. Install from https://ollama.com and start it.`,
       models: []
     }
   }
@@ -74,7 +83,7 @@ export async function chatOnce(
   }
   if (opts.format) payload.format = opts.format
 
-  const res = await fetch(`${OLLAMA}/api/chat`, {
+  const res = await fetch(`${OLLAMA()}/api/chat`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(payload),
@@ -101,7 +110,7 @@ export async function chatStream(
     }
   }
 
-  const res = await fetch(`${OLLAMA}/api/chat`, {
+  const res = await fetch(`${OLLAMA()}/api/chat`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(payload),
@@ -146,7 +155,7 @@ export async function pullModel(
   onProgress: (p: PullProgress) => void,
   signal?: AbortSignal
 ): Promise<void> {
-  const res = await fetch(`${OLLAMA}/api/pull`, {
+  const res = await fetch(`${OLLAMA()}/api/pull`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ name: model, stream: true }),

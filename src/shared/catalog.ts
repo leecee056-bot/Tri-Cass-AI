@@ -11,7 +11,10 @@ export const MODEL_CATALOG: CatalogModel[] = [
     approxRamGb: 2,
     ramBand: 'fits-8gb',
     notes: 'Fastest coding loop on 8 GB PCs',
-    contextLength: 32768
+    contextLength: 32768,
+    license: 'Apache-2.0 (Qwen)',
+    params: '1.5B',
+    quantization: 'Q4_K_M typical via Ollama'
   },
   {
     id: 'qwen25-coder-3b',
@@ -23,7 +26,10 @@ export const MODEL_CATALOG: CatalogModel[] = [
     ramBand: 'fits-8gb',
     recommended: true,
     notes: 'Recommended default for Tri Cass AI',
-    contextLength: 32768
+    contextLength: 32768,
+    license: 'Apache-2.0 (Qwen)',
+    params: '3B',
+    quantization: 'Q4_K_M typical via Ollama'
   },
   {
     id: 'qwen25-3b',
@@ -34,7 +40,10 @@ export const MODEL_CATALOG: CatalogModel[] = [
     approxRamGb: 3,
     ramBand: 'fits-8gb',
     notes: 'General chat + light coding',
-    contextLength: 32768
+    contextLength: 32768,
+    license: 'Apache-2.0 (Qwen)',
+    params: '3B',
+    quantization: 'Q4_K_M typical via Ollama'
   },
   {
     id: 'granite31-2b',
@@ -45,7 +54,10 @@ export const MODEL_CATALOG: CatalogModel[] = [
     approxRamGb: 2,
     ramBand: 'fits-8gb',
     notes: 'IBM Granite family — small & local',
-    contextLength: 8192
+    contextLength: 8192,
+    license: 'Apache-2.0 (Granite)',
+    params: '2B',
+    quantization: 'Q4 typical via Ollama'
   },
   {
     id: 'granite33-8b',
@@ -56,7 +68,10 @@ export const MODEL_CATALOG: CatalogModel[] = [
     approxRamGb: 7,
     ramBand: 'stretch',
     notes: 'Stretch fit on 8 GB — close other apps',
-    contextLength: 8192
+    contextLength: 8192,
+    license: 'Apache-2.0 (Granite)',
+    params: '8B',
+    quantization: 'Q4 typical via Ollama'
   },
   {
     id: 'qwen25-coder-7b',
@@ -67,7 +82,10 @@ export const MODEL_CATALOG: CatalogModel[] = [
     approxRamGb: 6,
     ramBand: 'stretch',
     notes: 'Stronger code; needs headroom on 8 GB',
-    contextLength: 32768
+    contextLength: 32768,
+    license: 'Apache-2.0 (Qwen)',
+    params: '7B',
+    quantization: 'Q4_K_M typical via Ollama'
   },
   {
     id: 'qwen25-14b',
@@ -78,7 +96,10 @@ export const MODEL_CATALOG: CatalogModel[] = [
     approxRamGb: 10,
     ramBand: 'needs-more-ram',
     notes: 'Not for typical 8 GB household PCs',
-    contextLength: 32768
+    contextLength: 32768,
+    license: 'Apache-2.0 (Qwen)',
+    params: '14B',
+    quantization: 'Q4_K_M / Q5 — heavy'
   },
   {
     id: 'qwen25-32b',
@@ -89,7 +110,10 @@ export const MODEL_CATALOG: CatalogModel[] = [
     approxRamGb: 20,
     ramBand: 'needs-more-ram',
     notes: 'Catalog entry for high-RAM desktops',
-    contextLength: 32768
+    contextLength: 32768,
+    license: 'Apache-2.0 (Qwen)',
+    params: '32B',
+    quantization: 'Q4 — needs ≥16–32 GB'
   }
 ]
 

@@ -97,8 +97,18 @@ export default function App() {
   const [dragOver, setDragOver] = useState(false)
   const [imageMode, setImageMode] = useState(false)
   const [imageSize, setImageSize] = useState<'512' | '768' | '1024'>('512')
+  const [imageQuality, setImageQuality] = useState<'standard' | 'detailed'>('detailed')
   const [selectedTemplateId, setSelectedTemplateId] = useState<string | null>(null)
   const [packAttribution, setPackAttribution] = useState<string[]>([])
+  const [modelQuery, setModelQuery] = useState('')
+  const [modelSort, setModelSort] = useState<'name' | 'size' | 'installed'>('name')
+  const [welcomeOpen, setWelcomeOpen] = useState(false)
+  const [ramGb, setRamGb] = useState<number | null>(null)
+  const [collapsedMsgs, setCollapsedMsgs] = useState<Record<string, boolean>>({})
+  const [lightbox, setLightbox] = useState<string | null>(null)
+  const [selectMode, setSelectMode] = useState(false)
+  const [selectedMsgIds, setSelectedMsgIds] = useState<string[]>([])
+  const [chatFolders, setChatFolders] = useState<string[]>(['Inbox'])
   const bottomRef = useRef<HTMLDivElement>(null)
   const listRef = useRef<HTMLDivElement>(null)
   const inputRef = useRef<HTMLTextAreaElement>(null)
@@ -226,6 +236,14 @@ export default function App() {
       const s = st as { attribution?: string[] }
       setPackAttribution(s.attribution || [])
     })
+    void window.triCass.diagRam().then(setRamGb)
+    if (!snap.config.welcomeDismissed) setWelcomeOpen(true)
+    const folders = [
+      ...new Set(
+        snap.sessions.map((s) => s.folder).filter((f): f is string => Boolean(f))
+      )
+    ]
+    if (folders.length) setChatFolders((prev) => [...new Set([...prev, ...folders])])
     requestAnimationFrame(() => inputRef.current?.focus())
   }
 
@@ -326,7 +344,7 @@ export default function App() {
     setMessages((prev) => [...prev, { id: `u-${Date.now()}`, role: 'user', content, createdAt: Date.now() }])
 
     if (forceImage) {
-      const img = (await window.triCass.imageGenerate(content, imageSize)) as {
+      const img = (await window.triCass.imageGenerate(content, imageSize, imageQuality)) as {
         ok: boolean
         path?: string
         backend?: string
@@ -334,7 +352,7 @@ export default function App() {
         safetyNote?: string
       }
       const assistantText = img.ok
-        ? `Generated image with \`${img.backend}\` (${imageSize}px):\n\n\`${img.path}\`\n\n${img.safetyNote || ''}`
+        ? `Generated image with \`${img.backend}\` (${imageSize}px · ${imageQuality}):\n\n\`${img.path}\`\n\n${img.safetyNote || ''}`
         : `Image generation failed: ${img.error}`
       setMessages((prev) => [
         ...prev,
@@ -483,7 +501,32 @@ export default function App() {
               </button>
             </div>
             <div className="sidebar-footer" title={workspace.root}>{workspace.root || 'No workspace'}</div>
+            <div className="nav-section" style={{ marginBottom: 8 }}>
+              <span style={{ fontSize: '0.75rem', color: 'var(--text-muted)' }}>Folders</span>
+              {chatFolders.map((f) => (
+                <button
+                  key={f}
+                  className="nav-item"
+                  type="button"
+                  onClick={() => setQuery(f === 'Inbox' ? '' : f)}
+                >
+                  {f}
+                </button>
+              ))}
+              <button
+                className="nav-item"
+                type="button"
+                onClick={() => {
+                  const name = prompt('New chat folder')
+                  if (!name) return
+                  setChatFolders((prev) => [...new Set([...prev, name])])
+                }}
+              >
+                + Folder
+              </button>
+            </div>
             <div className="chat-list">
+              {ready && !sessions.length ? <div className="skeleton" /> : null}
               {visibleSessions.map((s) => (
                 <div key={s.id} className={`chat-item ${s.id === activeId ? 'active' : ''}`} role="button" tabIndex={0}
                   onClick={() => void selectSession(s.id)}
@@ -494,6 +537,19 @@ export default function App() {
                     {s.title}
                   </span>
                   <div className="chat-actions" onClick={(e) => e.stopPropagation()}>
+                    <button
+                      className="icon-btn"
+                      type="button"
+                      title="Move to folder"
+                      onClick={async () => {
+                        const folder = prompt('Folder name (blank = Inbox)', s.folder || '')
+                        await window.triCass.sessionsSetFolder(s.id, folder?.trim() || null)
+                        if (folder?.trim()) setChatFolders((prev) => [...new Set([...prev, folder.trim()])])
+                        await refreshSessions()
+                      }}
+                    >
+                      📁
+                    </button>
                     <button className="icon-btn" type="button" title="Rename" onClick={() => void renameChat(s.id)}>✎</button>
                     <button className="icon-btn" type="button" title="Pin" onClick={() => void togglePin(s)}>📌</button>
                     <button className="icon-btn" type="button" title="Archive" onClick={() => void archiveChat(s)}>⬇</button>
@@ -589,24 +645,112 @@ export default function App() {
                       </div>
                     </div>
                   )}
-                  {messages.map((m) => (
-                    <article key={m.id} className={`msg ${m.role}`}>
-                      <div className="msg-role">
-                        <span>{m.role === 'user' ? 'You' : 'Tri Cass AI'}</span>
-                        {m.createdAt ? <span title={new Date(m.createdAt).toLocaleString()}>{new Date(m.createdAt).toLocaleTimeString()}</span> : null}
+                  {welcomeOpen && (
+                    <div className="banner">
+                      <strong>Welcome to Tri Cass AI</strong>
+                      <p style={{ margin: '6px 0' }}>
+                        You don’t need to code — ask for a website, Android app, image, or ASCII art. Skip anytime.
+                      </p>
+                      <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+                        <button
+                          className="btn primary"
+                          type="button"
+                          onClick={() => {
+                            setWelcomeOpen(false)
+                            if (config) void saveConfig({ ...config, welcomeDismissed: true })
+                          }}
+                        >
+                          Get started
+                        </button>
+                        <button
+                          className="btn"
+                          type="button"
+                          onClick={() => {
+                            setWelcomeOpen(false)
+                            if (config) void saveConfig({ ...config, welcomeDismissed: true })
+                          }}
+                        >
+                          Skip onboarding
+                        </button>
+                        <button
+                          className="btn ghost"
+                          type="button"
+                          onClick={() => {
+                            queueDraft('Create a website in my workspace')
+                            setWelcomeOpen(false)
+                            if (config) void saveConfig({ ...config, welcomeDismissed: true })
+                          }}
+                        >
+                          Try agent (only when you click)
+                        </button>
                       </div>
-                      <Markdown text={m.content} />
+                    </div>
+                  )}
+                  {messages.map((m) => {
+                    const long = (m.content || '').length > 1800
+                    const collapsed = collapsedMsgs[m.id]
+                    const body = collapsed && long ? `${m.content.slice(0, 1200)}\n\n…` : m.content
+                    return (
+                    <article key={m.id} className={`msg ${m.role}`} id={`msg-${m.id}`}>
+                      <div className="msg-role">
+                        <span className="avatar-initial">{m.role === 'user' ? 'Y' : 'T'}</span>
+                        <span>{m.role === 'user' ? 'You' : 'Tri Cass AI'}</span>
+                        {m.createdAt ? (
+                          <span title={new Date(m.createdAt).toLocaleString()}>
+                            {config?.relativeTimestamps
+                              ? `${Math.max(1, Math.round((Date.now() - m.createdAt) / 60000))}m ago`
+                              : new Date(m.createdAt).toLocaleTimeString()}
+                          </span>
+                        ) : null}
+                        {selectMode ? (
+                          <input
+                            type="checkbox"
+                            checked={selectedMsgIds.includes(m.id)}
+                            onChange={() =>
+                              setSelectedMsgIds((prev) =>
+                                prev.includes(m.id) ? prev.filter((x) => x !== m.id) : [...prev, m.id]
+                              )
+                            }
+                            aria-label="Select message"
+                          />
+                        ) : null}
+                      </div>
+                      <Markdown text={body} />
+                      {long ? (
+                        <button
+                          className="text-link"
+                          type="button"
+                          onClick={() =>
+                            setCollapsedMsgs((prev) => ({ ...prev, [m.id]: !prev[m.id] }))
+                          }
+                        >
+                          {collapsed ? 'Show more' : 'Collapse'}
+                        </button>
+                      ) : null}
                       {m.paths?.length ? (
                         <div className="paths">
                           {m.paths.map((p) => (
-                            <button key={p} type="button" onClick={() => void window.triCass.openWorkspace(p)}>{p}</button>
+                            <button
+                              key={p}
+                              type="button"
+                              onClick={() => {
+                                if (/\.(png|jpe?g|gif|webp)$/i.test(p)) setLightbox(p)
+                                else void window.triCass.openWorkspace(p)
+                              }}
+                            >
+                              {p}
+                            </button>
                           ))}
                         </div>
                       ) : null}
                       {m.citations?.length ? (
                         <div className="citations">
                           <strong>Sources: </strong>
-                          {m.citations.map((c) => <span key={c}>{c}</span>)}
+                          {m.citations.map((c) => (
+                            <button key={c} type="button" className="chip on" onClick={() => flash(`Citation: ${c}`)}>
+                              {c}
+                            </button>
+                          ))}
                         </div>
                       ) : null}
                       <div className="msg-actions">
@@ -618,9 +762,68 @@ export default function App() {
                             if (prevUser) void send('chat', prevUser.content)
                           }}>↻</button>
                         )}
+                        <button
+                          className="icon-btn"
+                          type="button"
+                          title="Continue"
+                          onClick={() => void send('chat', 'Continue generating from where you left off.')}
+                        >
+                          ↪
+                        </button>
+                        <details className="more-menu">
+                          <summary className="icon-btn" title="More">⋯</summary>
+                          <div className="more-pop">
+                            <button
+                              type="button"
+                              onClick={async () => {
+                                if (!activeId) return
+                                const fork = await window.triCass.sessionsFork(activeId, m.id)
+                                if (fork) {
+                                  await refreshSessions()
+                                  flash('Branched chat')
+                                }
+                              }}
+                            >
+                              Branch
+                            </button>
+                            <button
+                              type="button"
+                              onClick={async () => {
+                                if (!activeId) return
+                                await window.triCass.sessionsDeletePair(activeId, m.id)
+                                const s = await window.triCass.getSession(activeId)
+                                loadMessages(s)
+                              }}
+                            >
+                              Delete pair
+                            </button>
+                            <button
+                              type="button"
+                              onClick={() => {
+                                queueDraft(`> ${m.content.slice(0, 280)}\n\n`)
+                                inputRef.current?.focus()
+                              }}
+                            >
+                              Quote reply
+                            </button>
+                            <button
+                              type="button"
+                              onClick={() => void window.triCass.clipboardWrite(m.content)}
+                            >
+                              View raw / copy
+                            </button>
+                          </div>
+                        </details>
                       </div>
                     </article>
-                  ))}
+                    )
+                  })}
+                  {lightbox ? (
+                    <div className="lightbox" role="dialog" onClick={() => setLightbox(null)}>
+                      <p>{lightbox}</p>
+                      <button className="btn" type="button">Close</button>
+                    </div>
+                  ) : null}
                   {agentLog ? <div className="agent-steps">{agentLog}</div> : null}
                   {status && busy ? <div className="pill">{status}…</div> : null}
                   <div ref={bottomRef} />
@@ -751,16 +954,29 @@ export default function App() {
                         Image {imageMode ? 'on' : 'off'}
                       </button>
                       {imageMode ? (
-                        <select
-                          className="model-select"
-                          value={imageSize}
-                          aria-label="Image size"
-                          onChange={(e) => setImageSize(e.target.value as '512' | '768' | '1024')}
-                        >
-                          <option value="512">512</option>
-                          <option value="768">768</option>
-                          <option value="1024">1024</option>
-                        </select>
+                        <>
+                          <select
+                            className="model-select"
+                            value={imageSize}
+                            aria-label="Image size"
+                            onChange={(e) => setImageSize(e.target.value as '512' | '768' | '1024')}
+                          >
+                            <option value="512">512</option>
+                            <option value="768">768</option>
+                            <option value="1024">1024</option>
+                          </select>
+                          <select
+                            className="model-select"
+                            value={imageQuality}
+                            aria-label="Image quality"
+                            onChange={(e) =>
+                              setImageQuality(e.target.value as 'standard' | 'detailed')
+                            }
+                          >
+                            <option value="standard">Standard</option>
+                            <option value="detailed">Detailed</option>
+                          </select>
+                        </>
                       ) : null}
                       {selectedTemplateId ? (
                         <button
@@ -787,16 +1003,69 @@ export default function App() {
           )}
 
           {panel === 'models' && (
-            <div className="messages">
+            <div className="messages panel-page">
               <div className="messages-inner">
                 <h2 style={{ fontFamily: 'var(--font-serif)', marginTop: 0 }}>Models</h2>
                 <p style={{ color: 'var(--text-muted)' }}>
                   One-click pull via Ollama. Prefer “Fits ~8 GB” on household PCs.
+                  {ramGb != null ? ` Detected ~${ramGb} GB RAM.` : ''}
                   {!ollama.ok && ' Install Ollama from https://ollama.com and start it locally.'}
                 </p>
+                <div className="template-filters">
+                  <input
+                    className="search"
+                    placeholder="Search catalog"
+                    value={modelQuery}
+                    onChange={(e) => setModelQuery(e.target.value)}
+                    aria-label="Search models"
+                  />
+                  <select
+                    value={modelSort}
+                    onChange={(e) => setModelSort(e.target.value as typeof modelSort)}
+                    aria-label="Sort models"
+                  >
+                    <option value="name">Sort: name</option>
+                    <option value="size">Sort: size</option>
+                    <option value="installed">Sort: installed</option>
+                  </select>
+                  <button
+                    className="btn"
+                    type="button"
+                    onClick={() => {
+                      const tag = prompt('Custom Ollama tag (e.g. llama3.2:3b)')
+                      if (tag) {
+                        setModel(tag)
+                        void window.triCass.setSelectedModel(tag)
+                        flash('Custom tag selected — pull from Ollama if needed')
+                      }
+                    }}
+                  >
+                    Add custom tag
+                  </button>
+                </div>
                 <div className="catalog-list">
-                  {catalog.map((m) => {
+                  {[...catalog]
+                    .filter((m) => {
+                      const q = modelQuery.trim().toLowerCase()
+                      if (!q) return true
+                      return (
+                        m.displayName.toLowerCase().includes(q) ||
+                        m.ollamaTag.includes(q) ||
+                        m.family.includes(q)
+                      )
+                    })
+                    .sort((a, b) => {
+                      if (modelSort === 'size') return a.approxRamGb - b.approxRamGb
+                      if (modelSort === 'installed') {
+                        const ai = ollama.models.some((x) => x.name.startsWith(a.ollamaTag)) ? 0 : 1
+                        const bi = ollama.models.some((x) => x.name.startsWith(b.ollamaTag)) ? 0 : 1
+                        return ai - bi
+                      }
+                      return a.displayName.localeCompare(b.displayName)
+                    })
+                    .map((m) => {
                     const installed = ollama.models.some((x) => x.name === m.ollamaTag || x.name.startsWith(m.ollamaTag))
+                    const running = model === m.ollamaTag || model.startsWith(m.ollamaTag)
                     return (
                       <div key={m.id} className="catalog-row">
                         <div>
@@ -807,7 +1076,16 @@ export default function App() {
                           </span>
                           {m.recommended ? <span className="badge good">Recommended</span> : null}
                           {installed ? <span className="badge good">Installed</span> : <span className="badge">Available</span>}
+                          {running ? <span className="badge good">Running</span> : null}
                           {m.contextLength ? <span className="badge">ctx {m.contextLength}</span> : null}
+                          {m.quantization ? <span className="badge">{m.quantization}</span> : null}
+                          {m.license ? <span className="badge">{m.license}</span> : null}
+                          {m.params ? <span className="badge">{m.params}</span> : null}
+                          <div style={{ marginTop: 6 }}>
+                            <a className="text-link" href={`https://ollama.com/library/${m.ollamaTag.split(':')[0]}`} target="_blank" rel="noreferrer">
+                              Ollama library
+                            </a>
+                          </div>
                         </div>
                         <div style={{ display: 'grid', gap: 6 }}>
                           {!installed ? (
@@ -850,26 +1128,46 @@ export default function App() {
           )}
 
           {panel === 'knowledge' && (
-            <div className="messages">
+            <div className="messages panel-page">
               <div className="messages-inner">
                 <h2 style={{ fontFamily: 'var(--font-serif)', marginTop: 0 }}>Knowledge · this chat</h2>
-                <p style={{ color: 'var(--text-muted)' }}>Sources are linked to the current conversation and retrieved into prompts.</p>
-                <div style={{ display: 'flex', gap: 8, marginBottom: 12 }}>
+                <p style={{ color: 'var(--text-muted)' }}>
+                  Sources are linked to the current conversation and retrieved into prompts. Privacy: stays on this machine.
+                </p>
+                <p style={{ color: 'var(--text-muted)', fontSize: '0.85rem' }}>
+                  Supported types: txt, md, json, code, html, csv (docx best-effort). Excludes .git / node_modules.
+                </p>
+                <div style={{ display: 'flex', gap: 8, marginBottom: 12, flexWrap: 'wrap' }}>
                   <button className="btn primary" type="button" onClick={async () => {
                     if (!activeId) return
-                    const res = await window.triCass.kbAttach(activeId) as { sources: string[]; added: number }
+                    const res = await window.triCass.kbAttach(activeId) as { sources: string[]; added: number; warned?: string }
                     setSessions((prev) => prev.map((s) => s.id === activeId ? { ...s, kbPaths: res.sources } : s))
-                    flash(`Attached ${res.added} file(s)`)
+                    flash(res.warned || `Attached ${res.added} file(s)`)
                   }}>Attach files / folder</button>
+                  <button className="btn" type="button" onClick={async () => {
+                    if (!activeId) return
+                    await window.triCass.kbReindex(activeId)
+                    flash('Re-indexed')
+                  }}>Re-index</button>
+                  <button className="btn" type="button" onClick={async () => {
+                    const res = await window.triCass.kbWorkspaceAttach() as { added: number }
+                    flash(`Workspace KB +${res.added}`)
+                  }}>Attach workspace KB</button>
                   <button className="btn danger" type="button" onClick={async () => {
                     if (!activeId) return
                     await window.triCass.kbClear(activeId)
                     setSessions((prev) => prev.map((s) => s.id === activeId ? { ...s, kbPaths: [] } : s))
                   }}>Clear KB</button>
+                  <button className="btn danger" type="button" onClick={async () => {
+                    if (!activeId || !activeSession?.kbPaths?.length) return
+                    if (!confirm('Bulk remove all chat sources?')) return
+                    await window.triCass.kbRemove(activeId, activeSession.kbPaths)
+                    setSessions((prev) => prev.map((s) => s.id === activeId ? { ...s, kbPaths: [] } : s))
+                  }}>Bulk remove</button>
                 </div>
                 <ul>
                   {(activeSession?.kbPaths || []).map((p) => <li key={p}>{p}</li>)}
-                  {!activeSession?.kbPaths?.length && <li style={{ color: 'var(--text-muted)' }}>No sources yet.</li>}
+                  {!activeSession?.kbPaths?.length && <li style={{ color: 'var(--text-muted)' }}>No sources yet. Add files this chat can use.</li>}
                 </ul>
                 <button className="btn" type="button" onClick={() => setPanel('chat')}>Back to chat</button>
               </div>
@@ -882,9 +1180,23 @@ export default function App() {
                 <h2 style={{ fontFamily: 'var(--font-serif)', marginTop: 0 }}>Workspace</h2>
                 <p style={{ color: 'var(--text-muted)' }}>Agent projects are created under this folder.</p>
                 <code style={{ display: 'block', marginBottom: 12 }}>{workspace.root}</code>
+                <p style={{ color: 'var(--text-muted)' }}>
+                  Disk ~{workspace.diskMb ?? '?'} MB
+                  {workspace.recent?.length ? ` · Recent: ${workspace.recent.slice(0, 3).join(', ')}` : ''}
+                </p>
                 <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
                   <button className="btn primary" type="button" onClick={async () => setWorkspace(await window.triCass.pickWorkspace() as WorkspaceInfo)}>Choose folder</button>
                   <button className="btn" type="button" onClick={() => void window.triCass.openWorkspace()}>Open in explorer</button>
+                  <button className="btn" type="button" onClick={async () => {
+                    const name = prompt('New folder name')
+                    if (!name) return
+                    await window.triCass.workspaceCreateFolder(name)
+                    setWorkspace(await window.triCass.workspaceInfo() as WorkspaceInfo)
+                  }}>Create folder</button>
+                  <button className="btn" type="button" onClick={async () => {
+                    setWorkspace(await window.triCass.workspacePin(workspace.root, true) as WorkspaceInfo)
+                    flash('Pinned workspace')
+                  }}>Pin workspace</button>
                   <button className="btn" type="button" onClick={() => { setPanel('chat'); queueDraft('Create a website in my workspace'); inputRef.current?.focus() }}>New website…</button>
                   <button className="btn" type="button" onClick={() => { setPanel('chat'); queueDraft('Create a Node app with tests'); inputRef.current?.focus() }}>New app…</button>
                 </div>
@@ -993,8 +1305,105 @@ export default function App() {
                       onChange={(e) => void saveConfig({ ...config, imageBackend: e.target.value })}
                     />
                     <p style={{ color: 'var(--text-muted)', fontSize: '0.85rem', margin: '6px 0 0' }}>
-                      Built-in offline PNG writer. NSFW prompts blocked.
+                      Built-in offline PNG writer (standard + detailed presets). NSFW blocked. Full SD/ONNX deferred for 8GB.
                     </p>
+                  </div>
+                  <div className="field">
+                    <label><span>Image quality default</span></label>
+                    <select
+                      value={config.imageQuality || 'detailed'}
+                      onChange={(e) => {
+                        const q = e.target.value as 'standard' | 'detailed'
+                        setImageQuality(q)
+                        void saveConfig({ ...config, imageQuality: q })
+                      }}
+                    >
+                      <option value="standard">Standard</option>
+                      <option value="detailed">Detailed</option>
+                    </select>
+                  </div>
+                  <div className="row-between">
+                    <span>Tray / background run</span>
+                    <button
+                      className={`tool-toggle ${config.trayEnabled ? 'on' : ''}`}
+                      type="button"
+                      onClick={() => {
+                        const next = !config.trayEnabled
+                        void window.triCass.traySet(next)
+                        void saveConfig({ ...config, trayEnabled: next })
+                      }}
+                    >
+                      {config.trayEnabled ? 'On' : 'Off'}
+                    </button>
+                  </div>
+                  <div className="row-between">
+                    <span>Web search when researching</span>
+                    <button
+                      className={`tool-toggle ${config.webSearch ? 'on' : ''}`}
+                      type="button"
+                      onClick={() => void saveConfig({ ...config, webSearch: !config.webSearch })}
+                    >
+                      {config.webSearch ? 'On' : 'Off'}
+                    </button>
+                  </div>
+                  <div className="row-between">
+                    <span>Relative timestamps</span>
+                    <button
+                      className={`tool-toggle ${config.relativeTimestamps ? 'on' : ''}`}
+                      type="button"
+                      onClick={() =>
+                        void saveConfig({ ...config, relativeTimestamps: !config.relativeTimestamps })
+                      }
+                    >
+                      {config.relativeTimestamps ? 'On' : 'Off'}
+                    </button>
+                  </div>
+                  <div className="field">
+                    <label><span>Ollama URL</span></label>
+                    <input
+                      value={config.ollamaUrl || 'http://127.0.0.1:11434'}
+                      onChange={(e) => void saveConfig({ ...config, ollamaUrl: e.target.value })}
+                    />
+                  </div>
+                  <div className="field">
+                    <label><span>Proxy (optional Advanced)</span></label>
+                    <input
+                      value={config.proxyUrl || ''}
+                      placeholder="http://proxy:port"
+                      onChange={(e) => void saveConfig({ ...config, proxyUrl: e.target.value })}
+                    />
+                  </div>
+                  <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+                    <button className="btn" type="button" onClick={() => void window.triCass.windowNew()}>
+                      New window
+                    </button>
+                    <button
+                      className="btn"
+                      type="button"
+                      onClick={async () => {
+                        const text = await window.triCass.diagText()
+                        await window.triCass.clipboardWrite(text)
+                        flash('Diagnostics copied')
+                      }}
+                    >
+                      Copy diagnostics
+                    </button>
+                    <button className="btn" type="button" onClick={() => void window.triCass.diagOpenLogs()}>
+                      Open logs folder
+                    </button>
+                    <button className="btn" type="button" onClick={() => void window.triCass.dataExportAll()}>
+                      Export all data
+                    </button>
+                    <button className="btn" type="button" onClick={() => void window.triCass.dataImportBackup().then(() => refreshSessions())}>
+                      Import backup
+                    </button>
+                    <button
+                      className="btn"
+                      type="button"
+                      onClick={() => void window.triCass.templatesUndo().then((r) => flash((r as { ok?: boolean }).ok ? 'Template undone' : 'No checkpoint'))}
+                    >
+                      Undo last template
+                    </button>
                   </div>
                   <div className="field">
                     <label><span>Template pack location (optional override)</span></label>

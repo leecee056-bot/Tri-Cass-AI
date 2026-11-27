@@ -17,6 +17,8 @@
     "preview": "electron-vite preview",
     "typecheck": "tsc --noEmit -p tsconfig.web.json && tsc --noEmit -p tsconfig.node.json",
     "smoke": "tsx scripts/smoke.ts",
+    "test:unit": "tsx scripts/unit-agent-tools.ts",
+    "evidence:v4": "tsx scripts/evidence-v4.ts",
     "pack:win": "npm run build && electron-builder --win nsis portable",
     "pack:win:dir": "npm run build && electron-builder --win --dir",
     "pack:linux:dir": "npm run build && electron-builder --linux --dir"

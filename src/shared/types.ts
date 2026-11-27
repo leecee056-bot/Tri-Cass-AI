@@ -6,9 +6,14 @@ export type ChatMessage = {
   content: string
   createdAt: number
   meta?: {
-    kind?: 'plan' | 'tool' | 'files' | 'error' | 'kb'
+    kind?: 'plan' | 'tool' | 'files' | 'error' | 'kb' | 'diff' | 'command'
     paths?: string[]
     citations?: string[]
+    stdout?: string
+    stderr?: string
+    diff?: string
+    pinned?: boolean
+    feedback?: 'up' | 'down' | null
   }
 }
 
@@ -24,6 +29,9 @@ export type ChatSession = {
   model?: string | null
   draft?: string
   agentMode?: boolean
+  /** Sidebar folder / project grouping */
+  folder?: string | null
+  parentId?: string | null
 }
 
 export type OllamaModel = {
@@ -45,6 +53,9 @@ export type CatalogModel = {
   recommended?: boolean
   notes: string
   contextLength?: number
+  license?: string
+  params?: string
+  quantization?: string
 }
 
 export type PullProgress = {
@@ -59,7 +70,7 @@ export type PullProgress = {
 
 export type AgentStep = {
   at: number
-  kind: 'plan' | 'tool' | 'observe' | 'write' | 'run' | 'error' | 'done'
+  kind: 'plan' | 'tool' | 'observe' | 'write' | 'run' | 'error' | 'done' | 'diff'
   text: string
   path?: string
 }
@@ -70,6 +81,7 @@ export type AgentResult = {
   steps: AgentStep[]
   message: string
   filesCreated: string[]
+  checkpointId?: string
 }
 
 export type Appearance = 'system' | 'light' | 'dark'
@@ -88,17 +100,33 @@ export type ChatConfig = {
   systemPrompt: string
   enterToSend: boolean
   autoApproveCommands: boolean
-  /** Default scaffold platform when user ask is ambiguous */
   defaultPlatform?: 'web' | 'android' | 'electron' | 'python' | 'auto'
-  /** Image backend id — built-in procedural-png@1 */
   imageBackend?: string
-  /** Override template pack directory (optional) */
+  imageQuality?: 'standard' | 'detailed'
   templatePackPath?: string
+  /** Optional tray / background */
+  trayEnabled?: boolean
+  /** Relative vs absolute timestamps */
+  relativeTimestamps?: boolean
+  /** UI language */
+  locale?: string
+  /** Ollama base URL */
+  ollamaUrl?: string
+  /** Proxy URL advanced */
+  proxyUrl?: string
+  /** Welcome dismissed */
+  welcomeDismissed?: boolean
+  /** Show voice button (only when implemented) */
+  voiceEnabled?: boolean
+  kbScope?: 'chat' | 'workspace'
 }
 
 export type WorkspaceInfo = {
   root: string
   projects: string[]
+  recent?: string[]
+  pinned?: string[]
+  diskMb?: number
 }
 
 export type KnowledgeHit = {

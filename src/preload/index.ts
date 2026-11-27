@@ -57,7 +57,11 @@ export type TriCassAPI = {
   templatesDiskEstimate: () => Promise<number>
   templatesPreview: (id: string) => Promise<unknown>
   templatesOpenFolder: (path: string) => Promise<boolean>
-  imageGenerate: (prompt: string, size?: '512' | '768' | '1024') => Promise<unknown>
+  imageGenerate: (
+    prompt: string,
+    size?: '512' | '768' | '1024',
+    quality?: 'standard' | 'detailed'
+  ) => Promise<unknown>
   imageHistory: () => Promise<unknown>
   imageHelp: () => Promise<string>
   asciiFonts: () => Promise<string[]>
@@ -65,6 +69,33 @@ export type TriCassAPI = {
   asciiImage: (imagePath: string, maxWidth?: number) => Promise<unknown>
   asciiSave: (ascii: string, name?: string) => Promise<unknown>
   asciiToPng: (ascii: string, name?: string) => Promise<unknown>
+  windowNew: () => Promise<boolean>
+  sessionsFork: (id: string, messageId: string) => Promise<unknown>
+  sessionsDeletePair: (id: string, messageId: string) => Promise<unknown>
+  sessionsSetFolder: (id: string, folder: string | null) => Promise<unknown>
+  sessionsImport: (raw: unknown) => Promise<unknown>
+  dataExportAll: () => Promise<unknown>
+  dataImportBackup: () => Promise<unknown>
+  kbReindex: (chatId: string) => Promise<unknown>
+  kbRemove: (chatId: string, names: string[]) => Promise<unknown>
+  kbFailures: (chatId: string) => Promise<unknown>
+  kbTypes: () => Promise<string>
+  kbWorkspaceAttach: () => Promise<unknown>
+  kbWorkspaceList: () => Promise<string[]>
+  checkpointCreate: (projectPath: string, label?: string) => Promise<unknown>
+  checkpointList: () => Promise<unknown>
+  checkpointRollback: (id: string) => Promise<unknown>
+  templatesUndo: () => Promise<unknown>
+  diagText: () => Promise<string>
+  diagRam: () => Promise<number>
+  diagDisk: () => Promise<unknown>
+  diagOpenLogs: () => Promise<boolean>
+  webSearch: (q: string) => Promise<unknown>
+  webFetch: (url: string) => Promise<unknown>
+  workspacePin: (path: string, pinned: boolean) => Promise<unknown>
+  workspaceCreateFolder: (name: string) => Promise<string>
+  traySet: (enabled: boolean) => Promise<boolean>
+  configReset: () => Promise<ChatConfig>
   on: (channel: string, handler: (payload: unknown) => void) => () => void
 }
 
@@ -126,7 +157,8 @@ const api: TriCassAPI = {
   templatesDiskEstimate: () => ipcRenderer.invoke('templates:diskEstimate'),
   templatesPreview: (id) => ipcRenderer.invoke('templates:preview', id),
   templatesOpenFolder: (path) => ipcRenderer.invoke('templates:openFolder', path),
-  imageGenerate: (prompt, size) => ipcRenderer.invoke('image:generate', prompt, size),
+  imageGenerate: (prompt, size, quality) =>
+    ipcRenderer.invoke('image:generate', prompt, size, quality),
   imageHistory: () => ipcRenderer.invoke('image:history'),
   imageHelp: () => ipcRenderer.invoke('image:help'),
   asciiFonts: () => ipcRenderer.invoke('ascii:fonts'),
@@ -134,6 +166,34 @@ const api: TriCassAPI = {
   asciiImage: (imagePath, maxWidth) => ipcRenderer.invoke('ascii:image', imagePath, maxWidth),
   asciiSave: (ascii, name) => ipcRenderer.invoke('ascii:save', ascii, name),
   asciiToPng: (ascii, name) => ipcRenderer.invoke('ascii:toPng', ascii, name),
+  windowNew: () => ipcRenderer.invoke('window:new'),
+  sessionsFork: (id, messageId) => ipcRenderer.invoke('sessions:fork', id, messageId),
+  sessionsDeletePair: (id, messageId) => ipcRenderer.invoke('sessions:deletePair', id, messageId),
+  sessionsSetFolder: (id, folder) => ipcRenderer.invoke('sessions:setFolder', id, folder),
+  sessionsImport: (raw) => ipcRenderer.invoke('sessions:import', raw),
+  dataExportAll: () => ipcRenderer.invoke('data:exportAll'),
+  dataImportBackup: () => ipcRenderer.invoke('data:importBackup'),
+  kbReindex: (chatId) => ipcRenderer.invoke('kb:reindex', chatId),
+  kbRemove: (chatId, names) => ipcRenderer.invoke('kb:remove', chatId, names),
+  kbFailures: (chatId) => ipcRenderer.invoke('kb:failures', chatId),
+  kbTypes: () => ipcRenderer.invoke('kb:types'),
+  kbWorkspaceAttach: () => ipcRenderer.invoke('kb:workspaceAttach'),
+  kbWorkspaceList: () => ipcRenderer.invoke('kb:workspaceList'),
+  checkpointCreate: (projectPath, label) =>
+    ipcRenderer.invoke('checkpoint:create', projectPath, label),
+  checkpointList: () => ipcRenderer.invoke('checkpoint:list'),
+  checkpointRollback: (id) => ipcRenderer.invoke('checkpoint:rollback', id),
+  templatesUndo: () => ipcRenderer.invoke('templates:undo'),
+  diagText: () => ipcRenderer.invoke('diag:text'),
+  diagRam: () => ipcRenderer.invoke('diag:ram'),
+  diagDisk: () => ipcRenderer.invoke('diag:disk'),
+  diagOpenLogs: () => ipcRenderer.invoke('diag:openLogs'),
+  webSearch: (q) => ipcRenderer.invoke('web:search', q),
+  webFetch: (url) => ipcRenderer.invoke('web:fetch', url),
+  workspacePin: (path, pinned) => ipcRenderer.invoke('workspace:pin', path, pinned),
+  workspaceCreateFolder: (name) => ipcRenderer.invoke('workspace:createFolder', name),
+  traySet: (enabled) => ipcRenderer.invoke('tray:set', enabled),
+  configReset: () => ipcRenderer.invoke('config:reset'),
   on: (channel, handler) => {
     if (!allowed.has(channel)) return () => undefined
     const listener = (_event: Electron.IpcRendererEvent, payload: unknown) => handler(payload)

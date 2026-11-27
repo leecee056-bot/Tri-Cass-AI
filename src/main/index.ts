@@ -5,11 +5,13 @@ import {
   ipcMain,
   shell,
   Menu,
-  clipboard
+  clipboard,
+  Tray,
+  nativeImage
 } from 'electron'
 import { join } from 'node:path'
 import { randomUUID } from 'node:crypto'
-import { writeFileSync } from 'node:fs'
+import { writeFileSync, readFileSync } from 'node:fs'
 import { MODEL_CATALOG, DEFAULT_MODEL_TAG } from '../shared/catalog'
 import type { ChatConfig, PullProgress } from '../shared/types'
 import { ollamaStatus, chatStream, chatOnce, pullModel, historyToPayload } from './services/ollama'
@@ -17,14 +19,24 @@ import { runCodingAgent, wantsCodingAgent } from './services/agent'
 import {
   getWorkspaceInfo,
   setWorkspaceRoot,
-  getWorkspaceRoot
+  getWorkspaceRoot,
+  pinWorkspace,
+  createWorkspaceFolder,
+  cancelCommand,
+  touchRecentWorkspace
 } from './services/workspace'
 import {
   attachKnowledge,
   listKnowledge,
   clearKnowledge,
   knowledgeContext,
-  searchKnowledge
+  searchKnowledge,
+  reindexKnowledge,
+  removeKnowledgeSources,
+  knowledgeFailures,
+  kbSupportedTypes,
+  attachWorkspaceKnowledge,
+  listWorkspaceKnowledge
 } from './services/knowledge'
 import {
   loadSessions,
@@ -36,9 +48,14 @@ import {
   renameSession,
   clearAllSessions,
   setDraft,
-  resetSessionsToEmpty
+  resetSessionsToEmpty,
+  forkSessionFromMessage,
+  deleteMessagePair,
+  setSessionFolder,
+  importSession,
+  exportAllData
 } from './services/chatStore'
-import { loadPrefs, savePrefs, DEFAULT_CONFIG } from './services/paths'
+import { loadPrefs, savePrefs, DEFAULT_CONFIG, logsDir } from './services/paths'
 import {
   cancelPackDownload,
   downloadTemplatePack,
@@ -48,7 +65,8 @@ import {
   randomTemplate,
   searchTemplates,
   toggleFavorite,
-  useTemplate
+  useTemplate,
+  undoLastTemplateApply
 } from './services/templatePack'
 import { generateLocalImage, imageBackendHelp, imageHistory } from './services/imageGen'
 import {
@@ -58,8 +76,12 @@ import {
   saveAscii,
   textToAscii
 } from './services/asciiArt'
+import { createCheckpoint, listCheckpoints, rollbackCheckpoint } from './services/checkpoints'
+import { buildDiagnostics, detectRamGb, detectFreeDiskRough } from './services/diagnostics'
+import { webSearch, fetchUrl } from './services/webFetch'
 
 let mainWindow: BrowserWindow | null = null
+let tray: Tray | null = null
 const abortControllers = new Map<string, AbortController>()
 let activePullId: string | null = null
 const VERSION = '0.1.0'
@@ -575,8 +597,14 @@ ipcMain.handle('templates:openFolder', async (_e, path: string) => {
   return true
 })
 
-ipcMain.handle('image:generate', async (_e, prompt: string, size?: '512' | '768' | '1024') =>
-  generateLocalImage(prompt, size || '512')
+ipcMain.handle(
+  'image:generate',
+  async (
+    _e,
+    prompt: string,
+    size?: '512' | '768' | '1024',
+    quality?: 'standard' | 'detailed'
+  ) => generateLocalImage(prompt, size || '512', undefined, quality || 'detailed')
 )
 ipcMain.handle('image:history', async () => imageHistory())
 ipcMain.handle('image:help', async () => imageBackendHelp())
@@ -589,3 +617,121 @@ ipcMain.handle('ascii:image', async (_e, imagePath: string, maxWidth?: number) =
 ipcMain.handle('ascii:save', async (_e, ascii: string, name?: string) => saveAscii(ascii, name))
 ipcMain.handle('ascii:toPng', async (_e, ascii: string, name?: string) => asciiToPng(ascii, name))
 
+ipcMain.handle('window:new', () => {
+  createWindow()
+  return true
+})
+
+ipcMain.handle('sessions:fork', async (_e, id: string, messageId: string) =>
+  forkSessionFromMessage(id, messageId)
+)
+ipcMain.handle('sessions:deletePair', async (_e, id: string, messageId: string) =>
+  deleteMessagePair(id, messageId)
+)
+ipcMain.handle('sessions:setFolder', async (_e, id: string, folder: string | null) =>
+  setSessionFolder(id, folder)
+)
+ipcMain.handle('sessions:import', async (_e, raw: unknown) => importSession(raw))
+ipcMain.handle('data:exportAll', async () => {
+  const data = exportAllData()
+  const res = await dialog.showSaveDialog(mainWindow!, {
+    title: 'Export all Tri Cass AI data',
+    defaultPath: 'tri-cass-ai-backup.json'
+  })
+  if (res.canceled || !res.filePath) return { ok: false }
+  writeFileSync(res.filePath, JSON.stringify(data, null, 2), 'utf8')
+  return { ok: true, path: res.filePath }
+})
+ipcMain.handle('data:importBackup', async () => {
+  const res = await dialog.showOpenDialog(mainWindow!, {
+    title: 'Import backup',
+    properties: ['openFile'],
+    filters: [{ name: 'JSON', extensions: ['json'] }]
+  })
+  if (res.canceled || !res.filePaths[0]) return { ok: false }
+  try {
+    const raw = JSON.parse(readFileSync(res.filePaths[0], 'utf8')) as {
+      sessions?: unknown[]
+    }
+    let n = 0
+    for (const s of raw.sessions || []) {
+      if (importSession(s)) n++
+    }
+    return { ok: true, imported: n }
+  } catch (err) {
+    return { ok: false, error: err instanceof Error ? err.message : String(err) }
+  }
+})
+
+ipcMain.handle('kb:reindex', async (_e, chatId: string) => reindexKnowledge(chatId))
+ipcMain.handle('kb:remove', async (_e, chatId: string, names: string[]) =>
+  removeKnowledgeSources(chatId, names)
+)
+ipcMain.handle('kb:failures', async (_e, chatId: string) => knowledgeFailures(chatId))
+ipcMain.handle('kb:types', async () => kbSupportedTypes())
+ipcMain.handle('kb:workspaceAttach', async () => {
+  const res = await dialog.showOpenDialog(mainWindow!, {
+    title: 'Attach workspace knowledge',
+    properties: ['openFile', 'openDirectory', 'multiSelections']
+  })
+  if (res.canceled || !res.filePaths.length) return { sources: listWorkspaceKnowledge(), added: 0 }
+  return attachWorkspaceKnowledge(res.filePaths)
+})
+ipcMain.handle('kb:workspaceList', async () => listWorkspaceKnowledge())
+
+ipcMain.handle('checkpoint:create', async (_e, projectPath: string, label?: string) =>
+  createCheckpoint(projectPath, label)
+)
+ipcMain.handle('checkpoint:list', async () => listCheckpoints())
+ipcMain.handle('checkpoint:rollback', async (_e, id: string) => rollbackCheckpoint(id))
+ipcMain.handle('templates:undo', async () => undoLastTemplateApply())
+
+ipcMain.handle('diag:text', async () => buildDiagnostics())
+ipcMain.handle('diag:ram', async () => detectRamGb())
+ipcMain.handle('diag:disk', async () => detectFreeDiskRough())
+ipcMain.handle('diag:openLogs', async () => {
+  await shell.openPath(logsDir())
+  return true
+})
+
+ipcMain.handle('web:search', async (_e, q: string) => webSearch(q))
+ipcMain.handle('web:fetch', async (_e, url: string) => fetchUrl(url))
+
+ipcMain.handle('workspace:pin', async (_e, path: string, pinned: boolean) => {
+  pinWorkspace(path, pinned)
+  return getWorkspaceInfo()
+})
+ipcMain.handle('workspace:createFolder', async (_e, name: string) => createWorkspaceFolder(name))
+ipcMain.handle('workspace:cancelCommand', async (_e, id?: string) => cancelCommand(id))
+ipcMain.handle('workspace:touchRecent', async (_e, path: string) => {
+  touchRecentWorkspace(path)
+  return getWorkspaceInfo()
+})
+
+ipcMain.handle('tray:set', async (_e, enabled: boolean) => {
+  const prefs = loadPrefs()
+  prefs.config = { ...prefs.config, trayEnabled: enabled }
+  savePrefs(prefs)
+  if (enabled && !tray) {
+    const img = nativeImage.createEmpty()
+    tray = new Tray(img)
+    tray.setToolTip('Tri Cass AI')
+    tray.setContextMenu(
+      Menu.buildFromTemplate([
+        { label: 'Show', click: () => mainWindow?.show() },
+        { label: 'Quit', click: () => app.quit() }
+      ])
+    )
+  } else if (!enabled && tray) {
+    tray.destroy()
+    tray = null
+  }
+  return enabled
+})
+
+ipcMain.handle('config:reset', async () => {
+  const prefs = loadPrefs()
+  prefs.config = { ...DEFAULT_CONFIG }
+  savePrefs(prefs)
+  return prefs.config
+})

@@ -1,7 +1,7 @@
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs'
 import { randomUUID } from 'node:crypto'
 import type { ChatMessage, ChatSession } from '../../shared/types'
-import { sessionsPath, userDataRoot } from './paths'
+import { sessionsPath, userDataRoot, loadPrefs } from './paths'
 
 function ensure(): void {
   mkdirSync(userDataRoot(), { recursive: true })
@@ -125,5 +125,89 @@ export function setDraft(sessionId: string, draft: string): void {
   const s = getSession(sessionId)
   if (!s) return
   s.draft = draft
+  // crash recovery: draft is persisted on every debounce write
   updateSession(s)
+}
+
+export function setSessionFolder(sessionId: string, folder: string | null): ChatSession | null {
+  const s = getSession(sessionId)
+  if (!s) return null
+  s.folder = folder
+  return updateSession(s)
+}
+
+export function forkSessionFromMessage(sessionId: string, messageId: string): ChatSession | null {
+  const s = getSession(sessionId)
+  if (!s) return null
+  const idx = s.messages.findIndex((m) => m.id === messageId)
+  if (idx < 0) return null
+  const fork: ChatSession = {
+    ...s,
+    id: randomUUID(),
+    title: `${s.title} (branch)`,
+    createdAt: Date.now(),
+    updatedAt: Date.now(),
+    messages: s.messages.slice(0, idx + 1).map((m) => ({ ...m, id: randomUUID() })),
+    parentId: s.id,
+    pinned: false
+  }
+  const all = loadSessions()
+  all.unshift(fork)
+  saveSessions(all)
+  return fork
+}
+
+export function deleteMessagePair(sessionId: string, messageId: string): ChatSession | null {
+  const s = getSession(sessionId)
+  if (!s) return null
+  const idx = s.messages.findIndex((m) => m.id === messageId)
+  if (idx < 0) return null
+  const msg = s.messages[idx]
+  if (msg.role === 'user') {
+    // delete user + following assistant
+    const next = s.messages[idx + 1]
+    s.messages.splice(idx, next?.role === 'assistant' ? 2 : 1)
+  } else if (msg.role === 'assistant') {
+    const prev = s.messages[idx - 1]
+    if (prev?.role === 'user') s.messages.splice(idx - 1, 2)
+    else s.messages.splice(idx, 1)
+  }
+  return updateSession(s)
+}
+
+export function importSession(raw: unknown): ChatSession | null {
+  try {
+    const data = raw as ChatSession
+    if (!data || !Array.isArray(data.messages)) return null
+    const session: ChatSession = {
+      id: randomUUID(),
+      title: data.title || 'Imported chat',
+      createdAt: Date.now(),
+      updatedAt: Date.now(),
+      messages: data.messages.map((m) => ({
+        id: randomUUID(),
+        role: m.role,
+        content: String(m.content || ''),
+        createdAt: m.createdAt || Date.now(),
+        meta: m.meta
+      })),
+      kbPaths: data.kbPaths || [],
+      pinned: false,
+      archived: false,
+      model: data.model || null,
+      draft: '',
+      agentMode: true,
+      folder: data.folder || null
+    }
+    const all = loadSessions()
+    all.unshift(session)
+    saveSessions(all)
+    return session
+  } catch {
+    return null
+  }
+}
+
+export function exportAllData(): { sessions: ChatSession[]; prefs: unknown } {
+  return { sessions: loadSessions(), prefs: loadPrefs() }
 }

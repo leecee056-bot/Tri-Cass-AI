@@ -27,6 +27,9 @@ import { knowledgeContext, searchKnowledge } from './knowledge'
 import { useTemplate, getTemplate, searchTemplates } from './templatePack'
 import { generateLocalImage } from './imageGen'
 import { textToAscii, imageToAscii, saveAscii } from './asciiArt'
+import { createCheckpoint } from './checkpoints'
+import { webSearch, fetchUrl } from './webFetch'
+import { isDangerousCommand } from './workspace'
 
 export type AgentRunOpts = {
   prompt: string
@@ -79,8 +82,15 @@ async function execTool(
       return { text: listDir(path) || '(empty)', path }
     }
     case 'run': {
-      const out = await runCommand(projectRoot, call.args.command || 'echo ok')
-      return { text: out }
+      const cmd = call.args.command || 'echo ok'
+      if (isDangerousCommand(cmd)) {
+        return { text: `blocked dangerous command: ${cmd}` }
+      }
+      const out = await runCommand(projectRoot, cmd, 60_000, {
+        autoApprove: true,
+        onChunk: undefined
+      })
+      return { text: `[cwd ${projectRoot}]\n${out}` }
     }
     case 'search_knowledge': {
       const hits = searchKnowledge(chatId, call.args.query || '')
@@ -228,12 +238,48 @@ export async function runCodingAgent(opts: AgentRunOpts): Promise<AgentResult> {
     }
   }
 
+  if (opts.config.webSearch && /\b(search|research|look up|fetch)\b/i.test(opts.prompt)) {
+    emit(steps, opts.onStep, 'plan', 'Web search enabled — fetching…')
+    try {
+      const hits = await webSearch(opts.prompt, 3)
+      for (const h of hits) {
+        emit(
+          steps,
+          opts.onStep,
+          'observe',
+          h.ok ? `${h.url}: ${(h.text || '').slice(0, 200)}` : h.error || 'fail'
+        )
+      }
+    } catch (err) {
+      emit(steps, opts.onStep, 'error', err instanceof Error ? err.message : String(err))
+    }
+  }
+
   const kind = opts.forceKind || detectScaffoldIntent(opts.prompt)
+
+  // Continue / refactor existing project
+  const continueMatch = opts.prompt.match(
+    /\b(?:continue|keep)\s+building\b|\brefactor\b|\badd\s+(?:a\s+)?feature\b.{0,40}\b(?:in|to|on)\s+([~\w./-]+)/i
+  )
+  if (continueMatch && !kind) {
+    const hint = continueMatch[1]
+    const projectName = hint ? basename(hint) : 'project'
+    emit(steps, opts.onStep, 'plan', `Continue/refactor on ${projectName}`)
+    try {
+      createCheckpoint(
+        hint && hint.includes('/') ? hint : resolveInWorkspace('.', projectName),
+        'before-continue'
+      )
+    } catch {
+      /* ignore */
+    }
+  }
 
   if (kind) {
     emit(steps, opts.onStep, 'plan', `Detected intent: create ${kind}`)
     const title = extractProjectTitle(opts.prompt, defaultTitle(kind))
     const scaffold = runScaffold(kind, title)
+    createCheckpoint(scaffold.projectPath, 'after-scaffold')
     filesCreated.push(...scaffold.files)
     for (const f of scaffold.files) {
       emit(steps, opts.onStep, 'write', `Created ${basename(f)}`, f)
@@ -435,6 +481,9 @@ export function wantsCodingAgent(prompt: string): boolean {
   return (
     detectScaffoldIntent(prompt) !== null ||
     /\b(create|write|scaffold|implement)\b.{0,30}\b(file|folder|project)\b/i.test(prompt) ||
-    /\b(template|android|electron|ascii|generate an? image)\b/i.test(prompt)
+    /\b(template|android|electron|ascii|generate an? image)\b/i.test(prompt) ||
+    /\b(continue building|refactor|add (a )?feature)\b/i.test(prompt)
   )
 }
+
+void fetchUrl

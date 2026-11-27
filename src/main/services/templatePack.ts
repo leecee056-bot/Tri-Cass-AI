@@ -14,6 +14,7 @@ import { createGunzip } from 'node:zlib'
 import * as tar from 'tar'
 import { userDataRoot } from './paths'
 import { getWorkspaceRoot, slugifyProject } from './workspace'
+import { createCheckpoint, rollbackCheckpoint, listCheckpoints } from './checkpoints'
 
 export type TemplateMeta = {
   id: string
@@ -424,6 +425,8 @@ export function useTemplate(
     dest = join(root, `${slug}-${n++}`)
   }
   ensure(dest)
+  // checkpoint empty dest parent for undo-after-apply
+  const cp = createCheckpoint(dest, `before-template-${tpl.id}`)
 
   const src = tpl.path
   const srcStat = statSync(src)
@@ -496,7 +499,20 @@ export function useTemplate(
   )
   files.push(join(dest, 'TRI_CASS_TEMPLATE.json'))
 
-  return { ok: true, projectPath: dest, files, template: tpl }
+  return { ok: true, projectPath: dest, files, template: tpl, checkpointId: cp.id } as {
+    ok: boolean
+    projectPath?: string
+    files: string[]
+    error?: string
+    template?: TemplateMeta
+    checkpointId?: string
+  }
+}
+
+export function undoLastTemplateApply(): { ok: boolean; error?: string; projectPath?: string } {
+  const cps = listCheckpoints().filter((c) => c.label.startsWith('before-template-'))
+  if (!cps.length) return { ok: false, error: 'No template checkpoint' }
+  return rollbackCheckpoint(cps[0].id)
 }
 
 export function estimatePackDiskMb(): number {

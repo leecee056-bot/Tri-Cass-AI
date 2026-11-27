@@ -6,7 +6,8 @@
  * composition, and label. Documented so users know this is not SD/ONNX unless
  * they later point Settings at another backend.
  *
- * Backend id: `procedural-png@1`
+ * Backend id: `procedural-png@1` (standard) / `procedural-png@1-detailed` (higher quality preset).
+ * Full SD/ONNX on 8GB is deferred — weights + install friction exceed this pass.
  */
 import { createHash } from 'node:crypto'
 import { mkdirSync, writeFileSync, existsSync, readFileSync } from 'node:fs'
@@ -16,6 +17,7 @@ import { getWorkspaceRoot, slugifyProject } from './workspace'
 import { userDataRoot } from './paths'
 
 export type ImageSizePreset = '512' | '768' | '1024'
+export type ImageQuality = 'standard' | 'detailed'
 
 export type ImageGenResult = {
   ok: boolean
@@ -24,6 +26,7 @@ export type ImageGenResult = {
   height?: number
   backend: string
   prompt: string
+  quality?: ImageQuality
   error?: string
   safetyNote?: string
 }
@@ -143,60 +146,98 @@ function drawLabel(png: PNG, text: string, color: [number, number, number]): voi
 export function generateLocalImage(
   prompt: string,
   size: ImageSizePreset = '512',
-  outDir?: string
+  outDir?: string,
+  quality: ImageQuality = 'standard'
 ): ImageGenResult {
-  const backend = 'procedural-png@1'
+  const backend = quality === 'detailed' ? 'procedural-png@1-detailed' : 'procedural-png@1'
   const safetyNote =
-    'Local procedural renderer. Adult/NSFW prompts are blocked. Not a Stable Diffusion model.'
-  if (!prompt.trim()) return { ok: false, backend, prompt, error: 'Empty prompt', safetyNote }
+    'Local procedural renderer (standard | detailed presets). Adult/NSFW blocked. Not Stable Diffusion — SD/ONNX deferred for 8GB install size.'
+  if (!prompt.trim()) return { ok: false, backend, prompt, quality, error: 'Empty prompt', safetyNote }
   if (isUnsafe(prompt)) {
     return {
       ok: false,
       backend,
       prompt,
+      quality,
       error: 'That prompt was blocked by the local safety filter.',
       safetyNote
     }
   }
 
   const dim = Number(size) || 512
-  const seed = hashPrompt(prompt.trim().toLowerCase())
+  const seed = hashPrompt(prompt.trim().toLowerCase() + '|' + quality)
   const rand = mulberry32(seed)
   const png = new PNG({ width: dim, height: dim })
 
   const hue = Math.floor(rand() * 360)
   const hue2 = (hue + 40 + Math.floor(rand() * 80)) % 360
-  const [r1, g1, b1] = hslToRgb(hue, 0.45, 0.18)
+  const hue3 = (hue + 200) % 360
+  const [r1, g1, b1] = hslToRgb(hue, 0.45, 0.16)
   const [r2, g2, b2] = hslToRgb(hue2, 0.55, 0.42)
+  const [r3, g3, b3] = hslToRgb(hue3, 0.4, 0.28)
   const [ra, ga, ba] = hslToRgb((hue + 120) % 360, 0.65, 0.55)
 
+  const detailed = quality === 'detailed'
   for (let y = 0; y < dim; y++) {
     for (let x = 0; x < dim; x++) {
       const t = y / dim
-      const wave = Math.sin((x / dim) * Math.PI * (2 + rand() * 0.01) + seed * 0.0001) * 0.15
-      const mix = Math.min(1, Math.max(0, t + wave))
+      const nx = x / dim
+      const wave =
+        Math.sin(nx * Math.PI * (2 + (detailed ? 3 : 0)) + seed * 0.0001) * (detailed ? 0.22 : 0.15)
+      const ridge = detailed ? Math.sin((nx * 8 + t * 3) * Math.PI) * 0.08 : 0
+      const mix = Math.min(1, Math.max(0, t + wave + ridge))
+      const mist = detailed ? Math.sin((nx + t) * 12) * 0.04 : 0
       const idx = (dim * y + x) << 2
-      png.data[idx] = Math.round(r1 + (r2 - r1) * mix)
-      png.data[idx + 1] = Math.round(g1 + (g2 - g1) * mix)
-      png.data[idx + 2] = Math.round(b1 + (b2 - b1) * mix)
+      const rr = r1 + (r2 - r1) * mix + (r3 - r1) * mist
+      const gg = g1 + (g2 - g1) * mix + (g3 - g1) * mist
+      const bb = b1 + (b2 - b1) * mix + (b3 - b1) * mist
+      const grain = detailed ? (rand() - 0.5) * 10 : 0
+      png.data[idx] = Math.max(0, Math.min(255, Math.round(rr + grain)))
+      png.data[idx + 1] = Math.max(0, Math.min(255, Math.round(gg + grain)))
+      png.data[idx + 2] = Math.max(0, Math.min(255, Math.round(bb + grain)))
       png.data[idx + 3] = 255
     }
   }
 
-  // Soft orbs
-  for (let i = 0; i < 5; i++) {
+  const orbCount = detailed ? 12 : 5
+  for (let i = 0; i < orbCount; i++) {
     const cx = Math.floor(rand() * dim)
-    const cy = Math.floor(rand() * dim * 0.7)
-    const rad = dim * (0.08 + rand() * 0.18)
+    const cy = Math.floor(rand() * dim * 0.75)
+    const rad = dim * (0.05 + rand() * (detailed ? 0.22 : 0.18))
     for (let y = Math.max(0, cy - rad); y < Math.min(dim, cy + rad); y++) {
       for (let x = Math.max(0, cx - rad); x < Math.min(dim, cx + rad); x++) {
         const d = Math.hypot(x - cx, y - cy) / rad
         if (d > 1) continue
-        const a = (1 - d) * (1 - d) * 0.55
+        const a = (1 - d) * (1 - d) * (detailed ? 0.45 : 0.55)
         const idx = (dim * Math.floor(y) + Math.floor(x)) << 2
         png.data[idx] = Math.round(png.data[idx] * (1 - a) + ra * a)
         png.data[idx + 1] = Math.round(png.data[idx + 1] * (1 - a) + ga * a)
         png.data[idx + 2] = Math.round(png.data[idx + 2] * (1 - a) + ba * a)
+      }
+    }
+  }
+
+  if (detailed) {
+    // Horizon band + vignette for a stronger composition
+    const horizon = Math.floor(dim * (0.55 + rand() * 0.1))
+    for (let x = 0; x < dim; x++) {
+      for (let y = horizon; y < Math.min(dim, horizon + 3); y++) {
+        const idx = (dim * y + x) << 2
+        png.data[idx] = Math.min(255, png.data[idx] + 30)
+        png.data[idx + 1] = Math.min(255, png.data[idx + 1] + 24)
+        png.data[idx + 2] = Math.min(255, png.data[idx + 2] + 18)
+      }
+    }
+    for (let y = 0; y < dim; y++) {
+      for (let x = 0; x < dim; x++) {
+        const dx = x / dim - 0.5
+        const dy = y / dim - 0.5
+        const v = Math.min(1, Math.hypot(dx, dy) * 1.35)
+        const dark = v * v * 0.35
+        const idx = (dim * y + x) << 2
+        png.data[idx] = Math.round(png.data[idx] * (1 - dark))
+        png.data[idx + 1] = Math.round(png.data[idx + 1] * (1 - dark))
+        png.data[idx + 2] = Math.round(png.data[idx + 2] * (1 - dark))
       }
     }
   }
@@ -207,22 +248,21 @@ export function generateLocalImage(
   const dir = outDir || join(getWorkspaceRoot(), 'generated-images')
   if (!existsSync(dir)) mkdirSync(dir, { recursive: true })
   const slug = slugifyProject(prompt).slice(0, 40) || 'image'
-  const path = join(dir, `${slug}-${Date.now()}.png`)
+  const path = join(dir, `${slug}-${quality}-${Date.now()}.png`)
   const buf = PNG.sync.write(png)
   writeFileSync(path, buf)
 
-  // history
   try {
     const hist = existsSync(HISTORY_PATH())
       ? (JSON.parse(readFileSync(HISTORY_PATH(), 'utf8')) as Array<Record<string, unknown>>)
       : []
-    hist.unshift({ prompt, path, width: dim, height: dim, at: Date.now(), backend })
+    hist.unshift({ prompt, path, width: dim, height: dim, at: Date.now(), backend, quality })
     writeFileSync(HISTORY_PATH(), JSON.stringify(hist.slice(0, 100), null, 2), 'utf8')
   } catch {
     /* ignore */
   }
 
-  return { ok: true, path, width: dim, height: dim, backend, prompt, safetyNote }
+  return { ok: true, path, width: dim, height: dim, backend, prompt, quality, safetyNote }
 }
 
 export function imageHistory(): Array<Record<string, unknown>> {
@@ -235,9 +275,9 @@ export function imageHistory(): Array<Record<string, unknown>> {
 
 export function imageBackendHelp(): string {
   return [
-    'Image backend: procedural-png@1 (built-in).',
-    'Writes a real PNG locally from your prompt (palette + composition + label).',
-    'No cloud API and no large SD weights required.',
-    'NSFW prompts are blocked. To use ONNX/SD later, set a custom backend in Settings when available.'
+    'Image backend: procedural-png@1 (+ detailed quality preset).',
+    'Writes a real PNG locally from your prompt (palette, orbs, grain, vignette in detailed).',
+    'No cloud API. Full SD/ONNX skipped on 8GB PCs this pass (download size / setup).',
+    'NSFW prompts are blocked.'
   ].join('\n')
 }
