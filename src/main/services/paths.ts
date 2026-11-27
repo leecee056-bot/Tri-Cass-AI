@@ -1,23 +1,16 @@
 import { homedir } from 'node:os'
 import { join } from 'node:path'
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs'
+import type { ChatConfig } from '../../shared/types'
 
 export type PersistedPrefs = {
   workspaceRoot: string
   selectedModel: string | null
-  config: {
-    temperature: number
-    topP: number
-    maxTokens: number
-    streaming: boolean
-    webSearch: boolean
-    codeInterpreter: boolean
-    imageGeneration: boolean
-    fileAnalysis: boolean
-  }
+  config: ChatConfig
+  windowBounds?: { x?: number; y?: number; width: number; height: number; isMaximized?: boolean }
 }
 
-const DEFAULT_CONFIG: PersistedPrefs['config'] = {
+export const DEFAULT_CONFIG: ChatConfig = {
   temperature: 0.7,
   topP: 0.9,
   maxTokens: 4096,
@@ -25,7 +18,13 @@ const DEFAULT_CONFIG: PersistedPrefs['config'] = {
   webSearch: false,
   codeInterpreter: true,
   imageGeneration: false,
-  fileAnalysis: true
+  fileAnalysis: true,
+  appearance: 'system',
+  fontSize: 15,
+  systemPrompt:
+    'You are Tri Cass AI, a local coding assistant. Be practical and concise. Help plan, research, and create software on this machine.',
+  enterToSend: true,
+  autoApproveCommands: true
 }
 
 function ensureDir(p: string): string {
@@ -35,7 +34,6 @@ function ensureDir(p: string): string {
 
 function electronUserData(): string | null {
   try {
-    // Lazy require so headless smoke tests work without Electron runtime
     // eslint-disable-next-line @typescript-eslint/no-require-imports
     const electron = require('electron') as { app?: { getPath: (name: string) => string } }
     if (electron?.app?.getPath) return electron.app.getPath('userData')
@@ -76,7 +74,8 @@ export function loadPrefs(): PersistedPrefs {
     return {
       workspaceRoot: raw.workspaceRoot || defaultWorkspaceRoot(),
       selectedModel: raw.selectedModel ?? null,
-      config: { ...DEFAULT_CONFIG, ...(raw.config || {}) }
+      config: { ...DEFAULT_CONFIG, ...(raw.config || {}) },
+      windowBounds: raw.windowBounds
     }
   } catch {
     return {

@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
+import { marked } from 'marked'
 import type {
   CatalogModel,
   ChatConfig,
@@ -17,56 +18,102 @@ type Snapshot = {
   selectedModel: string | null
   config: ChatConfig
   catalog: CatalogModel[]
+  version: string
 }
 
 type UiMessage = {
   id: string
   role: 'user' | 'assistant'
   content: string
+  createdAt?: number
   paths?: string[]
+  citations?: string[]
 }
 
-const defaultConfig: ChatConfig = {
-  temperature: 0.7,
-  topP: 0.9,
-  maxTokens: 4096,
-  streaming: true,
-  webSearch: false,
-  codeInterpreter: true,
-  imageGeneration: false,
-  fileAnalysis: true
+type Panel = 'chat' | 'models' | 'knowledge' | 'workspace' | 'settings' | 'about'
+
+const EXAMPLES = [
+  'Make a website called Local Launch',
+  'Make an app called Notes CLI',
+  'Plan a small Python scraper for local files',
+  'Summarise the knowledge attached to this chat'
+]
+
+function applyTheme(appearance: ChatConfig['appearance'], fontSize: number) {
+  const root = document.documentElement
+  let theme = appearance
+  if (appearance === 'system') {
+    theme = window.matchMedia('(prefers-color-scheme: light)').matches ? 'light' : 'dark'
+  }
+  root.setAttribute('data-theme', theme === 'light' ? 'light' : 'dark')
+  root.style.setProperty('--font-size', `${fontSize}px`)
+}
+
+function Markdown({ text }: { text: string }) {
+  const html = useMemo(() => marked.parse(text || '', { async: false, gfm: true, breaks: true }) as string, [text])
+  return (
+    <div
+      className="bubble"
+      dangerouslySetInnerHTML={{ __html: html }}
+      onClick={(e) => {
+        const t = e.target as HTMLElement
+        if (t.classList.contains('copy-code') || t.closest('pre')) {
+          const pre = t.closest('pre')
+          const code = pre?.querySelector('code')?.textContent || t.getAttribute('data-code') || ''
+          if (code) void window.triCass.clipboardWrite(code)
+        }
+      }}
+    />
+  )
 }
 
 export default function App() {
   const [ready, setReady] = useState(false)
-  const [ollama, setOllama] = useState<OllamaStatus>({ ok: false, detail: '…', models: [] })
+  const [version, setVersion] = useState('0.1.0')
+  const [ollama, setOllama] = useState<OllamaStatus>({ ok: false, detail: '', models: [] })
   const [workspace, setWorkspace] = useState<WorkspaceInfo>({ root: '', projects: [] })
   const [sessions, setSessions] = useState<ChatSession[]>([])
   const [activeId, setActiveId] = useState<string | null>(null)
   const [messages, setMessages] = useState<UiMessage[]>([])
   const [draft, setDraft] = useState('')
   const [model, setModel] = useState('qwen2.5-coder:3b')
-  const [config, setConfig] = useState<ChatConfig>(defaultConfig)
+  const [config, setConfig] = useState<ChatConfig | null>(null)
   const [catalog, setCatalog] = useState<CatalogModel[]>([])
   const [busy, setBusy] = useState(false)
   const [runId, setRunId] = useState<string | null>(null)
   const [status, setStatus] = useState('')
-  const [showCatalog, setShowCatalog] = useState(false)
+  const [agentLog, setAgentLog] = useState('')
+  const [sidebarOpen, setSidebarOpen] = useState(true)
+  const [panel, setPanel] = useState<Panel>('chat')
+  const [query, setQuery] = useState('')
+  const [agentMode, setAgentMode] = useState(true)
+  const [useKb, setUseKb] = useState(true)
+  const [attachments, setAttachments] = useState<string[]>([])
   const [pull, setPull] = useState<PullProgress | null>(null)
-  const [composerTools, setComposerTools] = useState({
-    attach: true,
-    image: false,
-    file: true,
-    code: true,
-    web: false
-  })
+  const [toast, setToast] = useState('')
+  const [maximized, setMaximized] = useState(false)
+  const [showJump, setShowJump] = useState(false)
   const bottomRef = useRef<HTMLDivElement>(null)
+  const listRef = useRef<HTMLDivElement>(null)
+  const inputRef = useRef<HTMLTextAreaElement>(null)
   const streamBuf = useRef('')
+  const activeIdRef = useRef<string | null>(null)
+  const userScrolledUp = useRef(false)
+  const draftTimer = useRef<number | null>(null)
 
   const activeSession = useMemo(
     () => sessions.find((s) => s.id === activeId) || null,
     [sessions, activeId]
   )
+
+  const visibleSessions = useMemo(() => {
+    const q = query.trim().toLowerCase()
+    return sessions
+      .filter((s) => !s.archived)
+      .filter((s) => !q || s.title.toLowerCase().includes(q))
+  }, [sessions, query])
+
+  const selectedCatalog = catalog.find((c) => c.ollamaTag === model || model.startsWith(c.ollamaTag))
 
   useEffect(() => {
     void boot()
@@ -78,7 +125,7 @@ export default function App() {
         setMessages((prev) => {
           const next = [...prev]
           const last = next[next.length - 1]
-          if (last?.role === 'assistant' && last.id === 'streaming') {
+          if (last?.id === 'streaming') {
             next[next.length - 1] = { ...last, content: streamBuf.current }
             return next
           }
@@ -90,69 +137,71 @@ export default function App() {
           sessionId: string
           content: string
           files?: string[]
+          citations?: string[]
           runId?: string
         }
         if (p.sessionId !== activeIdRef.current) return
         streamBuf.current = ''
-        setMessages((prev) => {
-          const without = prev.filter((m) => m.id !== 'streaming')
-          return [
-            ...without,
-            {
-              id: `a-${Date.now()}`,
-              role: 'assistant',
-              content: p.content,
-              paths: p.files
-            }
-          ]
-        })
+        setMessages((prev) => [
+          ...prev.filter((m) => m.id !== 'streaming'),
+          {
+            id: `a-${Date.now()}`,
+            role: 'assistant',
+            content: p.content,
+            paths: p.files,
+            citations: p.citations,
+            createdAt: Date.now()
+          }
+        ])
         setBusy(false)
         setStatus('')
+        setAgentLog('')
         setRunId(p.runId || null)
         void refreshSessions()
       }),
       window.triCass.on('chat:error', (payload) => {
-        const p = payload as { sessionId: string; error: string }
+        const p = payload as { sessionId: string; error: string; aborted?: boolean }
         if (p.sessionId !== activeIdRef.current) return
         setMessages((prev) => [
           ...prev.filter((m) => m.id !== 'streaming'),
-          { id: `e-${Date.now()}`, role: 'assistant', content: `Error: ${p.error}` }
+          {
+            id: `e-${Date.now()}`,
+            role: 'assistant',
+            content: p.aborted ? '_Generation stopped._' : `Error: ${p.error}`
+          }
         ])
         setBusy(false)
         setStatus('')
+        setAgentLog('')
       }),
       window.triCass.on('chat:status', (payload) => {
-        const p = payload as { status: string }
-        setStatus(p.status)
+        setStatus((payload as { status: string }).status)
       }),
       window.triCass.on('agent:step', (payload) => {
-        const p = payload as { step: { kind: string; text: string } }
-        setStatus(`${p.step.kind}: ${p.step.text.slice(0, 80)}`)
+        const step = (payload as { step: { kind: string; text: string } }).step
+        setAgentLog((prev) => `${prev}${prev ? '\n' : ''}${step.kind}: ${step.text}`.slice(-1200))
+        setStatus(`${step.kind}`)
       }),
-      window.triCass.on('models:pullProgress', (payload) => {
-        setPull(payload as PullProgress)
-      })
+      window.triCass.on('models:pullProgress', (payload) => setPull(payload as PullProgress))
     ]
     return () => offs.forEach((off) => off())
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [])
 
-  const activeIdRef = useRef(activeId)
   useEffect(() => {
     activeIdRef.current = activeId
   }, [activeId])
 
   useEffect(() => {
-    bottomRef.current?.scrollIntoView({ behavior: 'smooth' })
-  }, [messages, status])
+    if (!userScrolledUp.current) bottomRef.current?.scrollIntoView({ behavior: 'smooth' })
+  }, [messages, agentLog])
+
+  useEffect(() => {
+    if (config) applyTheme(config.appearance, config.fontSize)
+  }, [config])
 
   async function boot() {
     const snap = (await window.triCass.getSnapshot()) as Snapshot
-    applySnapshot(snap)
-    setReady(true)
-  }
-
-  function applySnapshot(snap: Snapshot) {
+    setVersion(snap.version)
     setOllama(snap.ollama)
     setWorkspace(snap.workspace)
     setSessions(snap.sessions)
@@ -160,27 +209,17 @@ export default function App() {
     setModel(snap.selectedModel || 'qwen2.5-coder:3b')
     setConfig(snap.config)
     setCatalog(snap.catalog)
+    applyTheme(snap.config.appearance, snap.config.fontSize)
     const active = snap.sessions.find((s) => s.id === snap.activeSessionId)
-    setMessages(
-      (active?.messages || [])
-        .filter((m) => m.role === 'user' || m.role === 'assistant')
-        .map((m) => ({
-          id: m.id,
-          role: m.role as 'user' | 'assistant',
-          content: m.content,
-          paths: m.meta?.paths
-        }))
-    )
+    loadMessages(active)
+    setDraft(active?.draft || '')
+    setAgentMode(active?.agentMode !== false)
+    setMaximized(await window.triCass.windowIsMaximized())
+    setReady(true)
+    requestAnimationFrame(() => inputRef.current?.focus())
   }
 
-  async function refreshSessions() {
-    const list = (await window.triCass.listSessions()) as ChatSession[]
-    setSessions(list)
-  }
-
-  async function selectSession(id: string) {
-    setActiveId(id)
-    const session = (await window.triCass.getSession(id)) as ChatSession | null
+  function loadMessages(session?: ChatSession | null) {
     setMessages(
       (session?.messages || [])
         .filter((m) => m.role === 'user' || m.role === 'assistant')
@@ -188,41 +227,89 @@ export default function App() {
           id: m.id,
           role: m.role as 'user' | 'assistant',
           content: m.content,
-          paths: m.meta?.paths
+          createdAt: m.createdAt,
+          paths: m.meta?.paths,
+          citations: m.meta?.citations
         }))
     )
   }
 
+  async function refreshSessions() {
+    setSessions(await window.triCass.listSessions())
+  }
+
+  async function selectSession(id: string) {
+    setPanel('chat')
+    setActiveId(id)
+    const session = await window.triCass.getSession(id)
+    loadMessages(session)
+    setDraft(session?.draft || '')
+    setAgentMode(session?.agentMode !== false)
+    if (session?.model) setModel(session.model)
+    requestAnimationFrame(() => inputRef.current?.focus())
+  }
+
   async function newChat() {
-    const session = (await window.triCass.createSession()) as ChatSession
+    const session = await window.triCass.createSession()
     setSessions((prev) => [session, ...prev])
     setActiveId(session.id)
     setMessages([])
+    setDraft('')
+    setAttachments([])
+    setPanel('chat')
+    setAgentMode(true)
+    requestAnimationFrame(() => inputRef.current?.focus())
+  }
+
+  function queueDraft(value: string) {
+    setDraft(value)
+    if (!activeId) return
+    if (draftTimer.current) window.clearTimeout(draftTimer.current)
+    draftTimer.current = window.setTimeout(() => {
+      void window.triCass.setDraft(activeId, value)
+    }, 400)
   }
 
   async function send(
     mode: 'chat' | 'summarise' | 'plan' | 'research' | 'build' = 'chat',
     override?: string
   ) {
-    if (!activeId || busy) return
-    const content = (override ?? draft).trim()
-    if (!content) return
+    if (!activeId || !config || busy) return
+    let content = (override ?? draft).trim()
+    if (!content && !attachments.length) return
+
+    // slash commands
+    if (content.startsWith('/plan ')) {
+      mode = 'plan'
+      content = content.slice(6)
+    } else if (content.startsWith('/code ')) {
+      mode = 'build'
+      content = content.slice(6)
+    } else if (content.startsWith('/kb ')) {
+      mode = 'research'
+      content = content.slice(4)
+    }
+
+    if (attachments.length) {
+      content = `${content}\n\nAttached:\n${attachments.map((a) => `- ${a}`).join('\n')}`
+    }
+
     setDraft('')
+    setAttachments([])
+    void window.triCass.setDraft(activeId, '')
     setBusy(true)
     streamBuf.current = ''
-    setMessages((prev) => [...prev, { id: `u-${Date.now()}`, role: 'user', content }])
-    if (mode !== 'chat' || /make (a |an )?(website|app)/i.test(content)) {
-      setMessages((prev) => [
-        ...prev,
-        { id: 'streaming', role: 'assistant', content: 'Working…' }
-      ])
-    }
+    setAgentLog('')
+    userScrolledUp.current = false
+    setMessages((prev) => [...prev, { id: `u-${Date.now()}`, role: 'user', content, createdAt: Date.now() }])
     const result = (await window.triCass.chatSend({
       sessionId: activeId,
       content,
       model,
       config,
-      mode
+      mode,
+      agentMode,
+      useKb
     })) as { runId?: string }
     if (result?.runId) setRunId(result.runId)
   }
@@ -233,101 +320,154 @@ export default function App() {
     setStatus('stopped')
   }
 
-  async function pullModel(tag: string) {
-    setPull({ model: tag, status: 'starting', percent: 0 })
-    const res = await window.triCass.pullModel(tag)
-    if (res.ok) {
-      setModel(tag)
-      const st = (await window.triCass.ollamaStatus()) as OllamaStatus
-      setOllama(st)
+  async function endChat() {
+    if (!activeId) return
+    if (!confirm('Delete this chat?')) return
+    const list = await window.triCass.deleteSession(activeId)
+    setSessions(list)
+    if (list[0]) await selectSession(list[0].id)
+    else await newChat()
+  }
+
+  async function renameChat(id: string) {
+    const current = sessions.find((s) => s.id === id)
+    const title = prompt('Rename chat', current?.title || '')
+    if (!title) return
+    await window.triCass.renameSession(id, title)
+    await refreshSessions()
+  }
+
+  async function togglePin(session: ChatSession) {
+    await window.triCass.updateSession({ ...session, pinned: !session.pinned })
+    await refreshSessions()
+  }
+
+  async function archiveChat(session: ChatSession) {
+    await window.triCass.updateSession({ ...session, archived: true })
+    await refreshSessions()
+    if (session.id === activeId) {
+      const next = (await window.triCass.listSessions()).find((s) => !s.archived)
+      if (next) await selectSession(next.id)
+      else await newChat()
     }
   }
 
-  if (!ready) {
-    return <div className="empty-hint">Booting Tri Cass AI…</div>
+  async function saveConfig(next: ChatConfig) {
+    setConfig(next)
+    await window.triCass.setConfig(next)
+  }
+
+  function flash(msg: string) {
+    setToast(msg)
+    window.setTimeout(() => setToast(''), 2200)
+  }
+
+  if (!ready || !config) {
+    return <div className="empty"><p>Starting Tri Cass AI…</p></div>
   }
 
   return (
-    <div className="app-shell">
-      <header className="mech-frame topbar">
-        <div className="logo-mark" aria-hidden />
-        <div className="brand-block">
-          <h1 className="brand-title">TRI CASS AI</h1>
-          <p className="brand-tag">Plan · Research · Create · Automate</p>
+    <div className="app">
+      <header className="titlebar">
+        <div className="titlebar-brand">
+          <div className="brand-mark" aria-hidden />
+          <span className="hide-sm">Tri Cass AI</span>
         </div>
-        <p className="top-aside">Advanced AI assistant powered by local intelligence</p>
+        <div className="titlebar-center">
+          <span className={`status-dot ${ollama.ok ? 'on' : ''}`} />
+          <span className="pill">{ollama.ok ? 'Local · Online' : 'Ollama offline'}</span>
+        </div>
+        <div className="titlebar-right">
+          <button className="win-btn" type="button" title="Minimize" onClick={() => void window.triCass.windowMinimize()}>
+            ─
+          </button>
+          <button
+            className="win-btn"
+            type="button"
+            title="Maximize"
+            onClick={async () => setMaximized(await window.triCass.windowMaximize())}
+          >
+            {maximized ? '❐' : '□'}
+          </button>
+          <button className="win-btn close" type="button" title="Close" onClick={() => void window.triCass.windowClose()}>
+            ×
+          </button>
+        </div>
       </header>
 
-      <div className="main-grid">
-        <aside className="panel left-panel">
-          <button className="nav-btn primary" type="button" onClick={() => void newChat()}>
-            <span className="nav-icon">＋</span> New Chat
-          </button>
-          <button className="nav-btn" type="button" onClick={() => setShowCatalog(true)}>
-            <span className="nav-icon">⬇</span> Models
-          </button>
-          <button
-            className="nav-btn"
-            type="button"
-            onClick={async () => {
-              const info = (await window.triCass.pickWorkspace()) as WorkspaceInfo
-              setWorkspace(info)
-            }}
-          >
-            <span className="nav-icon">▣</span> Workspaces
-          </button>
-          <button
-            className="nav-btn"
-            type="button"
-            onClick={async () => {
-              if (!activeId) return
-              const res = (await window.triCass.kbAttach(activeId)) as {
-                sources: string[]
-                added: number
-              }
-              setSessions((prev) =>
-                prev.map((s) =>
-                  s.id === activeId ? { ...s, kbPaths: res.sources } : s
-                )
-              )
-              setStatus(`KB: ${res.added} file(s) attached`)
-            }}
-          >
-            <span className="nav-icon">📚</span> Knowledge
-          </button>
-          <button className="nav-btn" type="button" onClick={() => void window.triCass.openWorkspace()}>
-            <span className="nav-icon">📂</span> Open folder
-          </button>
-
-          <div className="section-label">Recent</div>
-          <div className="chat-list">
-            {sessions.map((s) => (
-              <button
-                key={s.id}
-                type="button"
-                className={`chat-item ${s.id === activeId ? 'active' : ''}`}
-                onClick={() => void selectSession(s.id)}
-              >
-                {s.title}
+      <div className={`shell ${sidebarOpen ? '' : 'collapsed'}`}>
+        <aside className="sidebar">
+          <div className="sidebar-inner">
+            <button className="btn primary block" type="button" onClick={() => void newChat()}>
+              + New chat
+            </button>
+            <input
+              className="search"
+              placeholder="Search chats"
+              value={query}
+              onChange={(e) => setQuery(e.target.value)}
+              aria-label="Search chats"
+            />
+            <div className="nav-section">
+              <button className={`nav-item ${panel === 'models' ? 'active' : ''}`} type="button" onClick={() => setPanel('models')}>
+                Models
               </button>
-            ))}
-          </div>
-
-          <div className="workspace-box" title={workspace.root}>
-            Workspace: {workspace.root || '—'}
-          </div>
-          <div className="status-row">
-            <span className={`dot ${ollama.ok ? 'on' : ''}`} />
-            {ollama.ok ? 'Online' : 'Ollama offline'}
+              <button className={`nav-item ${panel === 'knowledge' ? 'active' : ''}`} type="button" onClick={() => setPanel('knowledge')}>
+                Knowledge
+              </button>
+              <button className={`nav-item ${panel === 'workspace' ? 'active' : ''}`} type="button" onClick={() => setPanel('workspace')}>
+                Workspace
+              </button>
+              <button className={`nav-item ${panel === 'settings' ? 'active' : ''}`} type="button" onClick={() => setPanel('settings')}>
+                Settings
+              </button>
+              <button className={`nav-item ${panel === 'about' ? 'active' : ''}`} type="button" onClick={() => setPanel('about')}>
+                About
+              </button>
+            </div>
+            <div className="chat-list">
+              {visibleSessions.map((s) => (
+                <div key={s.id} className={`chat-item ${s.id === activeId ? 'active' : ''}`} role="button" tabIndex={0}
+                  onClick={() => void selectSession(s.id)}
+                  onKeyDown={(e) => e.key === 'Enter' && void selectSession(s.id)}
+                >
+                  <span>
+                    {s.pinned ? <span className="pin">📌 </span> : null}
+                    {s.title}
+                  </span>
+                  <div className="chat-actions" onClick={(e) => e.stopPropagation()}>
+                    <button className="icon-btn" type="button" title="Rename" onClick={() => void renameChat(s.id)}>✎</button>
+                    <button className="icon-btn" type="button" title="Pin" onClick={() => void togglePin(s)}>📌</button>
+                    <button className="icon-btn" type="button" title="Archive" onClick={() => void archiveChat(s)}>⬇</button>
+                    <button className="icon-btn" type="button" title="Delete" onClick={async () => {
+                      if (!confirm('Delete chat?')) return
+                      const list = await window.triCass.deleteSession(s.id)
+                      setSessions(list)
+                      if (s.id === activeId) {
+                        if (list[0]) await selectSession(list[0].id)
+                        else await newChat()
+                      }
+                    }}>🗑</button>
+                  </div>
+                </div>
+              ))}
+            </div>
           </div>
         </aside>
 
-        <section className="panel center-panel">
-          <div className="model-bar">
-            <div className="model-select-wrap">
+        <section className="main">
+          <div className="thread-header">
+            <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+              <button className="icon-btn" type="button" title="Toggle sidebar" onClick={() => setSidebarOpen((v) => !v)}>
+                ☰
+              </button>
+              <h1 className="thread-title">{activeSession?.title || 'New chat'}</h1>
+            </div>
+            <div className="header-actions">
               <select
                 className="model-select"
                 value={model}
+                aria-label="Model"
                 onChange={(e) => {
                   const v = e.target.value
                   setModel(v)
@@ -335,282 +475,368 @@ export default function App() {
                 }}
               >
                 {ollama.models.map((m) => (
-                  <option key={m.name} value={m.name}>
-                    {m.name}
-                  </option>
+                  <option key={m.name} value={m.name}>{m.name}</option>
                 ))}
                 {!ollama.models.some((m) => m.name === model) && (
-                  <option value={model}>{model} (not pulled)</option>
+                  <option value={model}>{model} (not installed)</option>
                 )}
               </select>
-              <span className="pill">{ollama.ok ? 'Online' : 'Offline'}</span>
-            </div>
-            <div className="toolbar-actions">
-              <button className="ghost-btn" type="button" onClick={() => setShowCatalog(true)}>
-                Download model
-              </button>
-              <button
-                className="ghost-btn"
-                type="button"
-                onClick={() =>
-                  void send('build', draft.trim() || 'Make a website called Local Launch')
-                }
-              >
-                Create project
-              </button>
-              {busy && (
-                <button className="ghost-btn danger" type="button" onClick={() => void stop()}>
-                  Stop
-                </button>
-              )}
+              {selectedCatalog?.contextLength ? (
+                <span className="pill">ctx {selectedCatalog.contextLength.toLocaleString()}</span>
+              ) : null}
+              <button className="btn ghost" type="button" onClick={() => setPanel('models')}>Download models</button>
+              <button className="btn ghost" type="button" onClick={() => void endChat()}>End chat</button>
+              <button className="btn ghost" type="button" onClick={() => void window.triCass.exportChat(activeId!, 'md').then(() => flash('Exported'))}>Export</button>
             </div>
           </div>
 
-          <div className="messages">
-            {!messages.length && (
-              <div className="empty-hint">
-                Ask Tri Cass AI anything — or say <strong>make a website</strong> /{' '}
-                <strong>make an app</strong> to create real folders on disk.
-              </div>
-            )}
-            {messages.map((m) => (
-              <div key={m.id} className={`msg ${m.role}`}>
-                <pre>{m.content}</pre>
-                {m.paths?.length ? (
-                  <div className="meta-paths">
-                    {m.paths.map((p) => (
-                      <div key={p}>{p}</div>
-                    ))}
-                  </div>
-                ) : null}
-              </div>
-            ))}
-            {status ? <div className="empty-hint" style={{ padding: 8 }}>{status}</div> : null}
-            <div ref={bottomRef} />
-          </div>
-
-          <div className="composer">
-            <div className="tool-row">
-              {(
-                [
-                  ['attach', 'Attach'],
-                  ['image', 'Image'],
-                  ['file', 'File'],
-                  ['code', 'Code'],
-                  ['web', 'Web Search']
-                ] as const
-              ).map(([key, label]) => (
-                <button
-                  key={key}
-                  type="button"
-                  className={`tool-chip ${composerTools[key] ? 'on' : ''}`}
-                  onClick={() =>
-                    setComposerTools((t) => ({ ...t, [key]: !t[key] }))
-                  }
-                >
-                  {label}
-                </button>
-              ))}
-            </div>
-            <div className="input-row">
-              <textarea
-                value={draft}
-                placeholder="Ask Tri Cass AI anything…"
-                onChange={(e) => setDraft(e.target.value)}
-                onKeyDown={(e) => {
-                  if (e.key === 'Enter' && !e.shiftKey) {
-                    e.preventDefault()
-                    void send('chat')
-                  }
-                }}
-              />
-              <button
-                className="send-btn"
-                type="button"
-                disabled={busy || !draft.trim()}
-                onClick={() => void send('chat')}
-                title="Send"
-              >
-                ✈
-              </button>
-            </div>
-          </div>
-        </section>
-
-        <aside className="panel right-panel">
-          <h3>Configuration</h3>
-          <div className="slider-block">
-            <label>
-              <span>Temperature</span>
-              <span>{config.temperature.toFixed(2)}</span>
-            </label>
-            <input
-              type="range"
-              min={0}
-              max={1.5}
-              step={0.05}
-              value={config.temperature}
-              onChange={(e) => {
-                const next = { ...config, temperature: Number(e.target.value) }
-                setConfig(next)
-                void window.triCass.setConfig(next)
-              }}
-            />
-          </div>
-          <div className="slider-block">
-            <label>
-              <span>Top P</span>
-              <span>{config.topP.toFixed(2)}</span>
-            </label>
-            <input
-              type="range"
-              min={0}
-              max={1}
-              step={0.05}
-              value={config.topP}
-              onChange={(e) => {
-                const next = { ...config, topP: Number(e.target.value) }
-                setConfig(next)
-                void window.triCass.setConfig(next)
-              }}
-            />
-          </div>
-          <div className="slider-block">
-            <label>
-              <span>Max Tokens</span>
-              <span>{config.maxTokens}</span>
-            </label>
-            <input
-              type="range"
-              min={256}
-              max={8192}
-              step={256}
-              value={config.maxTokens}
-              onChange={(e) => {
-                const next = { ...config, maxTokens: Number(e.target.value) }
-                setConfig(next)
-                void window.triCass.setConfig(next)
-              }}
-            />
-          </div>
-
-          <div className="toggle-row">
-            <span>Streaming</span>
-            <button
-              type="button"
-              className={`toggle ${config.streaming ? 'on' : ''}`}
-              onClick={() => {
-                const next = { ...config, streaming: !config.streaming }
-                setConfig(next)
-                void window.triCass.setConfig(next)
-              }}
-            >
-              <span />
-            </button>
-          </div>
-
-          <h3>Tools</h3>
-          {(
-            [
-              ['webSearch', 'Web Search'],
-              ['codeInterpreter', 'Code Interpreter'],
-              ['imageGeneration', 'Image Generation'],
-              ['fileAnalysis', 'File Analysis']
-            ] as const
-          ).map(([key, label]) => (
-            <label key={key} className="check-row">
-              <span>{label}</span>
-              <input
-                type="checkbox"
-                checked={config[key]}
-                onChange={(e) => {
-                  const next = { ...config, [key]: e.target.checked }
-                  setConfig(next)
-                  void window.triCass.setConfig(next)
-                }}
-              />
-            </label>
-          ))}
-
-          <h3>Quick Actions</h3>
-          <div className="quick-actions">
-            <button type="button" onClick={() => { setDraft('Summarise the current topic'); void send('summarise') }}>
-              Summarise
-            </button>
-            <button type="button" onClick={() => { setDraft('Make a plan for this project'); void send('plan') }}>
-              Plan
-            </button>
-            <button type="button" onClick={() => { setDraft('Research approaches using the knowledge base'); void send('research') }}>
-              Research
-            </button>
-          </div>
-
-          {activeSession?.kbPaths?.length ? (
+          {panel === 'chat' && (
             <>
-              <h3>Chat knowledge</h3>
-              <div className="workspace-box">
-                {activeSession.kbPaths.map((p) => (
-                  <div key={p}>{p}</div>
-                ))}
+              <div
+                className="messages"
+                ref={listRef}
+                onScroll={() => {
+                  const el = listRef.current
+                  if (!el) return
+                  const dist = el.scrollHeight - el.scrollTop - el.clientHeight
+                  userScrolledUp.current = dist > 120
+                  setShowJump(dist > 180)
+                }}
+              >
+                <div className="messages-inner">
+                  {!messages.length && (
+                    <div className="empty">
+                      <h2>Tri Cass AI</h2>
+                      <p>Local coding assistant for your PC. Chat, attach knowledge, or ask it to make a website or app on disk.</p>
+                      <div className="examples">
+                        {EXAMPLES.map((ex) => (
+                          <button key={ex} type="button" onClick={() => void send('chat', ex)}>{ex}</button>
+                        ))}
+                      </div>
+                    </div>
+                  )}
+                  {messages.map((m) => (
+                    <article key={m.id} className={`msg ${m.role}`}>
+                      <div className="msg-role">
+                        <span>{m.role === 'user' ? 'You' : 'Tri Cass AI'}</span>
+                        {m.createdAt ? <span title={new Date(m.createdAt).toLocaleString()}>{new Date(m.createdAt).toLocaleTimeString()}</span> : null}
+                      </div>
+                      <Markdown text={m.content} />
+                      {m.paths?.length ? (
+                        <div className="paths">
+                          {m.paths.map((p) => (
+                            <button key={p} type="button" onClick={() => void window.triCass.openWorkspace(p)}>{p}</button>
+                          ))}
+                        </div>
+                      ) : null}
+                      {m.citations?.length ? (
+                        <div className="citations">
+                          <strong>Sources: </strong>
+                          {m.citations.map((c) => <span key={c}>{c}</span>)}
+                        </div>
+                      ) : null}
+                      <div className="msg-actions">
+                        <button className="icon-btn" type="button" title="Copy" onClick={() => void window.triCass.clipboardWrite(m.content).then(() => flash('Copied'))}>⧉</button>
+                        {m.role === 'assistant' && (
+                          <button className="icon-btn" type="button" title="Regenerate" onClick={() => {
+                            const idx = messages.findIndex((x) => x.id === m.id)
+                            const prevUser = [...messages].slice(0, idx).reverse().find((x) => x.role === 'user')
+                            if (prevUser) void send('chat', prevUser.content)
+                          }}>↻</button>
+                        )}
+                      </div>
+                    </article>
+                  ))}
+                  {agentLog ? <div className="agent-steps">{agentLog}</div> : null}
+                  {status && busy ? <div className="pill">{status}…</div> : null}
+                  <div ref={bottomRef} />
+                </div>
+              </div>
+
+              <div className="composer-wrap">
+                {showJump && (
+                  <div style={{ textAlign: 'center', marginBottom: 8 }}>
+                    <button className="btn" type="button" onClick={() => {
+                      userScrolledUp.current = false
+                      bottomRef.current?.scrollIntoView({ behavior: 'smooth' })
+                      setShowJump(false)
+                    }}>Jump to latest</button>
+                  </div>
+                )}
+                <div
+                  className="composer"
+                  onDragOver={(e) => e.preventDefault()}
+                  onDrop={(e) => {
+                    e.preventDefault()
+                    const files = [...e.dataTransfer.files].map((f) => (f as File & { path?: string }).path || f.name)
+                    setAttachments((prev) => [...prev, ...files])
+                  }}
+                >
+                  {attachments.length > 0 && (
+                    <div className="attachments">
+                      {attachments.map((a) => (
+                        <span key={a} className="chip">
+                          {a.split(/[\\/]/).pop()}
+                          <button type="button" className="icon-btn" onClick={() => setAttachments((p) => p.filter((x) => x !== a))}>×</button>
+                        </span>
+                      ))}
+                    </div>
+                  )}
+                  <textarea
+                    ref={inputRef}
+                    value={draft}
+                    placeholder="Message Tri Cass AI — local chat that can create websites & apps…"
+                    onChange={(e) => queueDraft(e.target.value)}
+                    onPaste={(e) => {
+                      const items = e.clipboardData?.items
+                      if (!items) return
+                      for (const item of items) {
+                        if (item.type.startsWith('image/')) {
+                          flash('Image paste noted — attach files for durable KB ingest')
+                        }
+                      }
+                    }}
+                    onKeyDown={(e) => {
+                      if (!config.enterToSend) return
+                      if (e.key === 'Enter' && !e.shiftKey) {
+                        e.preventDefault()
+                        if (busy) void stop()
+                        else void send('chat')
+                      }
+                    }}
+                  />
+                  <div className="composer-bar">
+                    <div className="composer-tools">
+                      <button className="tool-toggle" type="button" onClick={async () => {
+                        const files = await window.triCass.pickFiles()
+                        if (files.length) setAttachments((p) => [...p, ...files])
+                      }}>Attach</button>
+                      <button className={`tool-toggle ${agentMode ? 'on' : ''}`} type="button" onClick={() => setAgentMode((v) => !v)}>
+                        Agent
+                      </button>
+                      <button className={`tool-toggle ${useKb ? 'on' : ''}`} type="button" onClick={() => setUseKb((v) => !v)}>
+                        KB
+                      </button>
+                      <button className="tool-toggle" type="button" onClick={() => void send('summarise', draft || 'Summarise our conversation so far')}>Summarise</button>
+                      <button className="tool-toggle" type="button" onClick={() => void send('plan', draft || 'Make a plan for this project')}>Plan</button>
+                      <button className="tool-toggle" type="button" onClick={() => void send('research', draft || 'Research using the knowledge base')}>Research</button>
+                    </div>
+                    {busy ? (
+                      <button className="send stop" type="button" title="Stop" onClick={() => void stop()}>■</button>
+                    ) : (
+                      <button className="send" type="button" title="Send" disabled={!draft.trim() && !attachments.length} onClick={() => void send('chat')}>↑</button>
+                    )}
+                  </div>
+                </div>
+                <div className="hint">Enter to send · Shift+Enter for newline · /plan /code /kb · data stays on this machine</div>
               </div>
             </>
-          ) : null}
-        </aside>
-      </div>
+          )}
 
-      {showCatalog && (
-        <div className="modal-backdrop" onClick={() => setShowCatalog(false)}>
-          <div className="modal" onClick={(e) => e.stopPropagation()}>
-            <h2>MODEL CATALOG</h2>
-            <p style={{ color: 'var(--muted)', marginTop: 0 }}>
-              One-click pull via Ollama. Prefer green “Fits ~8 GB” tags on household PCs.
-            </p>
-            <div className="catalog-grid">
-              {catalog.map((m) => (
-                <div key={m.id} className="catalog-card">
-                  <div>
-                    <h4>{m.displayName}</h4>
-                    <p>{m.notes}</p>
-                    <span
-                      className={`badge ${
-                        m.ramBand === 'stretch' ? 'warn' : m.ramBand === 'needs-more-ram' ? 'bad' : ''
-                      }`}
-                    >
-                      {ramBadgeLabel(m.ramBand)} · ~{m.approxRamGb} GB
-                    </span>
-                    {m.recommended ? <span className="badge">Recommended</span> : null}
-                    <span className="badge">{m.ollamaTag}</span>
-                  </div>
-                  <button
-                    className="ghost-btn"
-                    type="button"
-                    onClick={() => void pullModel(m.ollamaTag)}
-                  >
-                    Download
-                  </button>
-                </div>
-              ))}
-            </div>
-            {pull && (
-              <div>
-                <p style={{ fontSize: '0.8rem', color: 'var(--muted)' }}>
-                  {pull.model}: {pull.status}
-                  {pull.percent != null ? ` · ${pull.percent}%` : ''}
-                  {pull.error ? ` · ${pull.error}` : ''}
+          {panel === 'models' && (
+            <div className="messages">
+              <div className="messages-inner">
+                <h2 style={{ fontFamily: 'var(--font-serif)', marginTop: 0 }}>Models</h2>
+                <p style={{ color: 'var(--text-muted)' }}>
+                  One-click pull via Ollama. Prefer “Fits ~8 GB” on household PCs.
+                  {!ollama.ok && ' Install Ollama from https://ollama.com and start it locally.'}
                 </p>
-                <div className="progress">
-                  <span style={{ width: `${pull.percent || 0}%` }} />
+                <div className="catalog-list">
+                  {catalog.map((m) => {
+                    const installed = ollama.models.some((x) => x.name === m.ollamaTag || x.name.startsWith(m.ollamaTag))
+                    return (
+                      <div key={m.id} className="catalog-row">
+                        <div>
+                          <h4>{m.displayName}</h4>
+                          <p>{m.notes}</p>
+                          <span className={`badge ${m.ramBand === 'fits-8gb' ? 'good' : m.ramBand === 'stretch' ? 'warn' : 'bad'}`}>
+                            {ramBadgeLabel(m.ramBand)} · ~{m.approxRamGb} GB
+                          </span>
+                          {m.recommended ? <span className="badge good">Recommended</span> : null}
+                          {installed ? <span className="badge good">Installed</span> : <span className="badge">Available</span>}
+                          {m.contextLength ? <span className="badge">ctx {m.contextLength}</span> : null}
+                        </div>
+                        <div style={{ display: 'grid', gap: 6 }}>
+                          {!installed ? (
+                            <button className="btn primary" type="button" onClick={() => void window.triCass.pullModel(m.ollamaTag).then(async (r) => {
+                              if (r.ok) {
+                                setModel(m.ollamaTag)
+                                setOllama(await window.triCass.ollamaStatus() as OllamaStatus)
+                                flash('Model ready')
+                              }
+                            })}>Download</button>
+                          ) : (
+                            <>
+                              <button className="btn" type="button" onClick={() => { setModel(m.ollamaTag); void window.triCass.setSelectedModel(m.ollamaTag); flash('Selected') }}>Use</button>
+                              <button className="btn danger" type="button" onClick={async () => {
+                                if (!confirm(`Delete ${m.ollamaTag}?`)) return
+                                await window.triCass.deleteModel(m.ollamaTag)
+                                setOllama(await window.triCass.ollamaStatus() as OllamaStatus)
+                              }}>Delete</button>
+                            </>
+                          )}
+                        </div>
+                      </div>
+                    )
+                  })}
+                </div>
+                {pull && (
+                  <div style={{ marginTop: 16 }}>
+                    <div className="row-between">
+                      <span>{pull.model}: {pull.status}{pull.percent != null ? ` · ${pull.percent}%` : ''}</span>
+                      {!pull.done && <button className="btn" type="button" onClick={() => void window.triCass.cancelPull()}>Cancel</button>}
+                    </div>
+                    <div className="progress"><i style={{ width: `${pull.percent || 0}%` }} /></div>
+                  </div>
+                )}
+                <div style={{ marginTop: 16 }}>
+                  <button className="btn" type="button" onClick={() => setPanel('chat')}>Back to chat</button>
                 </div>
               </div>
-            )}
-            <div style={{ marginTop: 14, textAlign: 'right' }}>
-              <button className="ghost-btn" type="button" onClick={() => setShowCatalog(false)}>
-                Close
-              </button>
             </div>
-          </div>
-        </div>
-      )}
+          )}
+
+          {panel === 'knowledge' && (
+            <div className="messages">
+              <div className="messages-inner">
+                <h2 style={{ fontFamily: 'var(--font-serif)', marginTop: 0 }}>Knowledge · this chat</h2>
+                <p style={{ color: 'var(--text-muted)' }}>Sources are linked to the current conversation and retrieved into prompts.</p>
+                <div style={{ display: 'flex', gap: 8, marginBottom: 12 }}>
+                  <button className="btn primary" type="button" onClick={async () => {
+                    if (!activeId) return
+                    const res = await window.triCass.kbAttach(activeId) as { sources: string[]; added: number }
+                    setSessions((prev) => prev.map((s) => s.id === activeId ? { ...s, kbPaths: res.sources } : s))
+                    flash(`Attached ${res.added} file(s)`)
+                  }}>Attach files / folder</button>
+                  <button className="btn danger" type="button" onClick={async () => {
+                    if (!activeId) return
+                    await window.triCass.kbClear(activeId)
+                    setSessions((prev) => prev.map((s) => s.id === activeId ? { ...s, kbPaths: [] } : s))
+                  }}>Clear KB</button>
+                </div>
+                <ul>
+                  {(activeSession?.kbPaths || []).map((p) => <li key={p}>{p}</li>)}
+                  {!activeSession?.kbPaths?.length && <li style={{ color: 'var(--text-muted)' }}>No sources yet.</li>}
+                </ul>
+                <button className="btn" type="button" onClick={() => setPanel('chat')}>Back to chat</button>
+              </div>
+            </div>
+          )}
+
+          {panel === 'workspace' && (
+            <div className="messages">
+              <div className="messages-inner">
+                <h2 style={{ fontFamily: 'var(--font-serif)', marginTop: 0 }}>Workspace</h2>
+                <p style={{ color: 'var(--text-muted)' }}>Agent projects are created under this folder.</p>
+                <code style={{ display: 'block', marginBottom: 12 }}>{workspace.root}</code>
+                <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+                  <button className="btn primary" type="button" onClick={async () => setWorkspace(await window.triCass.pickWorkspace() as WorkspaceInfo)}>Choose folder</button>
+                  <button className="btn" type="button" onClick={() => void window.triCass.openWorkspace()}>Open in explorer</button>
+                  <button className="btn" type="button" onClick={() => void send('build', 'Make a website called Quick Site')}>Create website</button>
+                  <button className="btn" type="button" onClick={() => void send('build', 'Make an app called Quick App')}>Create app</button>
+                </div>
+                <h3 style={{ marginTop: 24 }}>Projects</h3>
+                <ul>
+                  {workspace.projects.map((p) => (
+                    <li key={p}>
+                      <button className="btn ghost" type="button" onClick={() => void window.triCass.openWorkspace(`${workspace.root}/${p}`)}>{p}</button>
+                    </li>
+                  ))}
+                  {!workspace.projects.length && <li style={{ color: 'var(--text-muted)' }}>No projects yet.</li>}
+                </ul>
+                <button className="btn" type="button" onClick={() => setPanel('chat')}>Back to chat</button>
+              </div>
+            </div>
+          )}
+
+          {panel === 'settings' && (
+            <div className="messages">
+              <div className="messages-inner">
+                <h2 style={{ fontFamily: 'var(--font-serif)', marginTop: 0 }}>Settings</h2>
+                <div className="settings-grid">
+                  <div className="field">
+                    <label><span>Appearance</span></label>
+                    <select value={config.appearance} onChange={(e) => void saveConfig({ ...config, appearance: e.target.value as ChatConfig['appearance'] })}>
+                      <option value="system">System</option>
+                      <option value="dark">Dark</option>
+                      <option value="light">Light</option>
+                    </select>
+                  </div>
+                  <div className="field">
+                    <label><span>Font size</span><span>{config.fontSize}px</span></label>
+                    <input type="range" min={13} max={18} value={config.fontSize} onChange={(e) => void saveConfig({ ...config, fontSize: Number(e.target.value) })} />
+                  </div>
+                  <div className="field">
+                    <label><span>Custom instructions</span></label>
+                    <textarea rows={4} value={config.systemPrompt} onChange={(e) => void saveConfig({ ...config, systemPrompt: e.target.value })} />
+                  </div>
+                  <div className="field">
+                    <label><span>Temperature</span><span>{config.temperature.toFixed(2)}</span></label>
+                    <input type="range" min={0} max={1.5} step={0.05} value={config.temperature} onChange={(e) => void saveConfig({ ...config, temperature: Number(e.target.value) })} />
+                  </div>
+                  <div className="field">
+                    <label><span>Top P</span><span>{config.topP.toFixed(2)}</span></label>
+                    <input type="range" min={0} max={1} step={0.05} value={config.topP} onChange={(e) => void saveConfig({ ...config, topP: Number(e.target.value) })} />
+                  </div>
+                  <div className="field">
+                    <label><span>Max tokens</span><span>{config.maxTokens}</span></label>
+                    <input type="range" min={256} max={8192} step={256} value={config.maxTokens} onChange={(e) => void saveConfig({ ...config, maxTokens: Number(e.target.value) })} />
+                  </div>
+                  <div className="row-between">
+                    <span>Streaming</span>
+                    <button className={`tool-toggle ${config.streaming ? 'on' : ''}`} type="button" onClick={() => void saveConfig({ ...config, streaming: !config.streaming })}>{config.streaming ? 'On' : 'Off'}</button>
+                  </div>
+                  <div className="row-between">
+                    <span>Enter to send</span>
+                    <button className={`tool-toggle ${config.enterToSend ? 'on' : ''}`} type="button" onClick={() => void saveConfig({ ...config, enterToSend: !config.enterToSend })}>{config.enterToSend ? 'On' : 'Off'}</button>
+                  </div>
+                  <div className="row-between">
+                    <span>Auto-approve agent commands</span>
+                    <button className={`tool-toggle ${config.autoApproveCommands ? 'on' : ''}`} type="button" onClick={() => void saveConfig({ ...config, autoApproveCommands: !config.autoApproveCommands })}>{config.autoApproveCommands ? 'On' : 'Off'}</button>
+                  </div>
+                  <p style={{ color: 'var(--text-muted)', fontSize: '0.9rem' }}>
+                    Privacy: chats, knowledge, and models stay on this machine. Telemetry is off. Releases are manual via GitHub.
+                  </p>
+                  <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+                    <button className="btn danger" type="button" onClick={async () => {
+                      if (!confirm('Clear all chats?')) return
+                      const s = await window.triCass.clearAllSessions()
+                      setSessions([s])
+                      await selectSession(s.id)
+                    }}>Clear all chats</button>
+                    <button className="btn" type="button" onClick={() => void window.triCass.exportChat(activeId!, 'json')}>Export chat JSON</button>
+                    <button className="btn" type="button" onClick={() => setPanel('chat')}>Back to chat</button>
+                  </div>
+                  <details>
+                    <summary>Keyboard shortcuts</summary>
+                    <ul>
+                      <li>Enter — send (when enabled)</li>
+                      <li>Shift+Enter — newline</li>
+                      <li>Ctrl/Cmd+Q — quit</li>
+                      <li>/plan /code /kb — slash commands</li>
+                    </ul>
+                  </details>
+                </div>
+              </div>
+            </div>
+          )}
+
+          {panel === 'about' && (
+            <div className="messages">
+              <div className="messages-inner">
+                <h2 style={{ fontFamily: 'var(--font-serif)', marginTop: 0 }}>About Tri Cass AI</h2>
+                <p>Version {version} · MIT License</p>
+                <p style={{ color: 'var(--text-muted)' }}>
+                  Standalone local coding assistant. Updates ship as GitHub Releases (portable zip / installer).
+                </p>
+                <button className="btn" type="button" onClick={() => setPanel('chat')}>Back to chat</button>
+              </div>
+            </div>
+          )}
+        </section>
+      </div>
+
+      {toast ? <div className="toast">{toast}</div> : null}
     </div>
   )
 }

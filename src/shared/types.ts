@@ -8,6 +8,7 @@ export type ChatMessage = {
   meta?: {
     kind?: 'plan' | 'tool' | 'files' | 'error' | 'kb'
     paths?: string[]
+    citations?: string[]
   }
 }
 
@@ -18,6 +19,11 @@ export type ChatSession = {
   updatedAt: number
   messages: ChatMessage[]
   kbPaths: string[]
+  pinned?: boolean
+  archived?: boolean
+  model?: string | null
+  draft?: string
+  agentMode?: boolean
 }
 
 export type OllamaModel = {
@@ -38,6 +44,7 @@ export type CatalogModel = {
   ramBand: ModelRamBand
   recommended?: boolean
   notes: string
+  contextLength?: number
 }
 
 export type PullProgress = {
@@ -65,6 +72,8 @@ export type AgentResult = {
   filesCreated: string[]
 }
 
+export type Appearance = 'system' | 'light' | 'dark'
+
 export type ChatConfig = {
   temperature: number
   topP: number
@@ -74,6 +83,11 @@ export type ChatConfig = {
   codeInterpreter: boolean
   imageGeneration: boolean
   fileAnalysis: boolean
+  appearance: Appearance
+  fontSize: number
+  systemPrompt: string
+  enterToSend: boolean
+  autoApproveCommands: boolean
 }
 
 export type WorkspaceInfo = {
@@ -100,4 +114,6 @@ export type AppStateSnapshot = {
   activeSessionId: string | null
   selectedModel: string | null
   config: ChatConfig
+  catalog: CatalogModel[]
+  version: string
 }

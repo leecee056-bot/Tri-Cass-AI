@@ -22,7 +22,12 @@ async function main(): Promise<void> {
     webSearch: false,
     codeInterpreter: true,
     imageGeneration: false,
-    fileAnalysis: true
+    fileAnalysis: true,
+    appearance: 'system' as const,
+    fontSize: 15,
+    systemPrompt: 'You are Tri Cass AI.',
+    enterToSend: true,
+    autoApproveCommands: true
   }
 
   const site = await runCodingAgent({
