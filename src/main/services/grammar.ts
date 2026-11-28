@@ -5,13 +5,38 @@ export const GRAMMAR_TOOLS = [
   'read_file',
   'list_dir',
   'run',
+  'search_content',
+  'search_files',
   'search_knowledge',
   'apply_template',
   'generate_image',
   'generate_ascii',
   'restore_checkpoint',
+  'save_plan',
   'finish'
 ] as const
+
+/** Tools allowed in Plan mode (no arbitrary file mutation). */
+export const PLAN_MODE_TOOLS = new Set<string>([
+  'read_file',
+  'list_dir',
+  'search_content',
+  'search_files',
+  'search_knowledge',
+  'save_plan',
+  'finish'
+])
+
+export const MUTATING_TOOLS = new Set<string>([
+  'write_file',
+  'edit_file',
+  'apply_diff',
+  'run',
+  'apply_template',
+  'generate_image',
+  'generate_ascii',
+  'restore_checkpoint'
+])
 
 export type GrammarToolName = (typeof GRAMMAR_TOOLS)[number]
 
@@ -38,10 +63,13 @@ const REQUIRED_ARGS: Partial<Record<GrammarToolName, string[]>> = {
   apply_diff: ['diff'],
   read_file: ['path'],
   run: ['command'],
+  search_content: ['query'],
+  search_files: ['query'],
   search_knowledge: ['query'],
   apply_template: ['id'],
   generate_image: ['prompt'],
   restore_checkpoint: ['id'],
+  save_plan: ['content'],
   finish: ['message']
 }
 
@@ -54,17 +82,21 @@ Tools (one per reply):
 - read_file: args path
 - list_dir: args path ("" = project root)
 - run: args command — run in project folder (node/npm/python preferred)
+- search_content: args query — ripgrep-style content search (path:line:snippet)
+- search_files: args query — filename search in project
 - search_knowledge: args query
 - apply_template: args id, name — copy a library template into the workspace
 - generate_image: args prompt, size (512|768|1024) — local PNG writer
 - generate_ascii: args text, font OR image — figlet / image→ASCII
 - restore_checkpoint: args id — restore a prior checkpoint snapshot
+- save_plan: args content — write .tri-cass/plan.md (Plan mode)
 - finish: args message — done; message is shown to the user in plain English
 Prefer relative paths. Prefer short files. Never require the user to open a code editor.
 Refuse unsafe Android signing / Play Store credential requests clearly.
-Never reply with prose. Never call finish until at least one write_file (or scaffold) has created a real file on disk.
-If asked to make a website/app/folder, you MUST use write_file / apply_template / apply_diff tools — claiming “done” without tools is forbidden.
-Call finish only when the project exists on disk.`
+Never reply with prose. Never call finish until at least one write_file (or scaffold) has created a real file on disk (Act mode).
+In Plan mode you may ONLY use read/list/search/save_plan/finish — no mutating tools until the user switches to Act (/code).
+If asked to make a website/app/folder in Act mode, you MUST use write_file / apply_template / apply_diff — claiming “done” without tools is forbidden.
+Call finish only when the project exists on disk (Act) or the plan is saved (Plan).`
 
 const TOOL_SET = new Set<string>(GRAMMAR_TOOLS)
 
@@ -118,8 +150,15 @@ export function parseGrammarReply(text: string): ParseGrammarResult {
       args[k] = typeof v === 'string' ? v : JSON.stringify(v)
     }
     const required = REQUIRED_ARGS[tool] || []
-    // Empty string is OK for content/new (clear file / delete substring); path/old/diff/etc. must be non-empty.
-    const allowEmpty = new Set(['content', 'new', 'message'])
+    // Empty string OK for write_file content, edit new, finish message.
+    const allowEmpty =
+      tool === 'write_file'
+        ? new Set(['content'])
+        : tool === 'edit_file'
+          ? new Set(['new'])
+          : tool === 'finish'
+            ? new Set(['message'])
+            : new Set<string>()
     const missingStrict = required.filter((k) => {
       if (!(k in args)) return true
       if (allowEmpty.has(k)) return false

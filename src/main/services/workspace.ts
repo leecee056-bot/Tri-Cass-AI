@@ -181,14 +181,60 @@ export function isDangerousCommand(command: string): boolean {
   return DANGEROUS.test(command)
 }
 
+/** Minimal env for sandboxed project commands (keep PATH/HOME/lang; drop secrets-ish extras). */
+export function sandboxEnv(): NodeJS.ProcessEnv {
+  const keep = [
+    'PATH',
+    'PATHEXT',
+    'HOME',
+    'USERPROFILE',
+    'TEMP',
+    'TMP',
+    'TMPDIR',
+    'SystemRoot',
+    'LANG',
+    'LC_ALL',
+    'TERM',
+    'ComSpec',
+    'NUMBER_OF_PROCESSORS',
+    'PROCESSOR_ARCHITECTURE'
+  ]
+  const env: NodeJS.ProcessEnv = { CI: '1', NODE_ENV: 'development' }
+  for (const k of keep) {
+    if (process.env[k]) env[k] = process.env[k]
+  }
+  return env
+}
+
+export type RunCommandResult = {
+  text: string
+  exitCode: number
+  cwd: string
+  timedOut?: boolean
+}
+
 export async function runCommand(
   cwd: string,
   command: string,
   timeoutMs = 60_000,
   opts?: { id?: string; autoApprove?: boolean; onChunk?: (chunk: string) => void }
 ): Promise<string> {
+  const r = await runCommandDetailed(cwd, command, timeoutMs, opts)
+  return r.text
+}
+
+export async function runCommandDetailed(
+  cwd: string,
+  command: string,
+  timeoutMs = 60_000,
+  opts?: { id?: string; autoApprove?: boolean; onChunk?: (chunk: string) => void }
+): Promise<RunCommandResult> {
   if (isDangerousCommand(command) && !opts?.autoApprove) {
-    return `error: blocked dangerous command (enable auto-approve in Settings to override carefully): ${command}`
+    return {
+      text: `error: blocked dangerous command (enable auto-approve in Settings to override carefully): ${command}`,
+      exitCode: 126,
+      cwd
+    }
   }
   const isWin = process.platform === 'win32'
   const id = opts?.id || `cmd-${Date.now()}`
@@ -203,18 +249,37 @@ export async function runCommand(
         cwd,
         timeout: timeoutMs,
         maxBuffer: 1024 * 1024,
-        env: { ...process.env, CI: '1' },
+        env: sandboxEnv(),
         signal: ac.signal
       }
     )
     const out = `${stdout || ''}${stderr ? '\n' + stderr : ''}`.trim()
-    const text = out.slice(0, 6000) || '(no output)'
+    const body = out.slice(0, 6000) || '(no output)'
+    const text = `[cwd ${cwd}] [exit 0]\n${body}`
     opts?.onChunk?.(text)
-    return text
+    return { text, exitCode: 0, cwd }
   } catch (err) {
-    const e = err as { stdout?: string; stderr?: string; message?: string; name?: string }
-    if (e.name === 'AbortError' || /abort/i.test(e.message || '')) return 'error: command cancelled'
-    return `error: ${(e.stderr || e.stdout || e.message || String(err)).slice(0, 4000)}`
+    const e = err as {
+      stdout?: string
+      stderr?: string
+      message?: string
+      name?: string
+      code?: number | string
+      killed?: boolean
+      signal?: string
+    }
+    if (e.name === 'AbortError' || /abort/i.test(e.message || '')) {
+      return { text: `error: command cancelled\n[cwd ${cwd}]`, exitCode: 130, cwd }
+    }
+    const timedOut = Boolean(e.killed) || /ETIMEDOUT|timed out/i.test(e.message || '')
+    const code = typeof e.code === 'number' ? e.code : timedOut ? 124 : 1
+    const detail = (e.stderr || e.stdout || e.message || String(err)).slice(0, 4000)
+    return {
+      text: `[cwd ${cwd}] [exit ${code}]${timedOut ? ' [timeout]' : ''}\nerror: ${detail}`,
+      exitCode: code,
+      cwd,
+      timedOut
+    }
   } finally {
     commandControllers.delete(id)
   }

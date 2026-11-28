@@ -79,6 +79,7 @@ import {
   textToAscii
 } from './services/asciiArt'
 import { createCheckpoint, listCheckpoints, rollbackCheckpoint } from './services/checkpoints'
+import { detectRuntimes, formatRuntimeGuidance } from './services/runtimes'
 import { buildDiagnostics, detectRamGb, detectFreeDiskRough } from './services/diagnostics'
 import { webSearch, fetchUrl } from './services/webFetch'
 import {
@@ -549,20 +550,33 @@ ipcMain.handle(
         createIntent ||
         (payload.agentMode !== false && (mode === 'build' || wantsCodingAgent(content)))
 
-      if (coding) {
+      if (coding || mode === 'plan') {
         send('chat:status', { sessionId, status: 'agent' })
-        const result = await runCodingAgent({
-          prompt: content,
-          chatId: sessionId,
-          model,
-          config,
-          signal: ac.signal,
-          onStep: (step) => send('agent:step', { sessionId, step }),
-          selectedTemplateId: payload.selectedTemplateId,
-          forceKind: createIntent && !payload.selectedTemplateId
-            ? detectScaffoldIntent(content) || undefined
-            : undefined
-        })
+        let result
+        try {
+          result = await runCodingAgent({
+            prompt: content,
+            chatId: sessionId,
+            model,
+            config,
+            signal: ac.signal,
+            onStep: (step) => send('agent:step', { sessionId, step }),
+            selectedTemplateId: payload.selectedTemplateId,
+            forceKind:
+              createIntent && !payload.selectedTemplateId
+                ? detectScaffoldIntent(content) || undefined
+                : undefined,
+            phase: mode === 'plan' && !createIntent ? 'plan' : 'act'
+          })
+        } catch (err) {
+          const msg = err instanceof Error ? err.message : String(err)
+          if (/already active/i.test(msg)) {
+            appendMessage(sessionId, 'assistant', msg, { kind: 'error' })
+            send('chat:done', { sessionId, content: msg, files: [], runId, ok: false })
+            return { ok: false, runId, error: msg }
+          }
+          throw err
+        }
         const verified = verifyFilesOnDisk(result.filesCreated)
         const files = verified.ok
         const failedCreate = createIntent && files.length === 0
@@ -599,13 +613,15 @@ ipcMain.handle(
           files,
           citations,
           runId,
-          ok: !failedCreate && result.ok
+          ok: !failedCreate && result.ok,
+          checkpointId: result.checkpointId
         })
         return {
           ok: !failedCreate && result.ok,
           runId,
           projectPath: result.projectPath,
-          files
+          files,
+          checkpointId: result.checkpointId
         }
       }
 
@@ -616,8 +632,8 @@ ipcMain.handle(
         config.systemPrompt?.trim() ||
         'You are Tri Cass AI, a local coding assistant. Be practical and concise.'
       if (mode === 'summarise') system += ' Summarise clearly in short bullets.'
-      if (mode === 'plan') system += ' Produce a numbered implementation plan.'
       if (mode === 'research') system += ' Research-style answer using attached knowledge when present.'
+      // mode === 'plan' is handled by the coding-agent branch above (Plan phase + save_plan)
       if (kb) system += `\n\n${kb}`
 
       const history = historyToPayload(fresh?.messages || [])
@@ -798,6 +814,10 @@ ipcMain.handle('checkpoint:create', async (_e, projectPath: string, label?: stri
 )
 ipcMain.handle('checkpoint:list', async () => listCheckpoints())
 ipcMain.handle('checkpoint:rollback', async (_e, id: string) => rollbackCheckpoint(id))
+ipcMain.handle('runtimes:detect', async () => {
+  const info = detectRuntimes()
+  return { ...info, summary: formatRuntimeGuidance(info) }
+})
 ipcMain.handle('templates:undo', async () => undoLastTemplateApply())
 
 ipcMain.handle('diag:text', async () => buildDiagnostics())

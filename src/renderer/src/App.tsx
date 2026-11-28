@@ -32,6 +32,7 @@ type UiMessage = {
   paths?: string[]
   citations?: string[]
   projectPath?: string
+  checkpointId?: string
 }
 
 type Panel = 'chat' | 'models' | 'knowledge' | 'workspace' | 'templates' | 'ascii' | 'settings' | 'about'
@@ -108,7 +109,10 @@ export default function App() {
   const [panel, setPanel] = useState<Panel>('chat')
   const [query, setQuery] = useState('')
   const [agentMode, setAgentMode] = useState(true)
+  /** Plan = no mutating tools; Act = write files. Chat context preserved either way. */
+  const [actPhase, setActPhase] = useState(true)
   const [useKb, setUseKb] = useState(true)
+  const [lastCheckpointId, setLastCheckpointId] = useState<string | null>(null)
   const [attachments, setAttachments] = useState<string[]>([])
   const [pull, setPull] = useState<PullProgress | null>(null)
   const [toast, setToast] = useState('')
@@ -180,9 +184,11 @@ export default function App() {
           runId?: string
           projectPath?: string
           ok?: boolean
+          checkpointId?: string
         }
         if (p.sessionId !== activeIdRef.current) return
         streamBuf.current = ''
+        if (p.checkpointId) setLastCheckpointId(p.checkpointId)
         setMessages((prev) => [
           ...prev.filter((m) => m.id !== 'streaming'),
           {
@@ -192,6 +198,7 @@ export default function App() {
             paths: p.files,
             citations: p.citations,
             projectPath: p.projectPath,
+            checkpointId: p.checkpointId,
             createdAt: Date.now()
           }
         ])
@@ -365,12 +372,18 @@ export default function App() {
 
     // slash commands
     let forceImage = imageMode
-    if (content.startsWith('/plan ')) {
+    if (content.startsWith('/plan ') || content === '/plan') {
       mode = 'plan'
-      content = content.slice(6)
-    } else if (content.startsWith('/code ')) {
+      setActPhase(false)
+      content = content === '/plan' ? 'Write a plan for the current task' : content.slice(6)
+    } else if (content.startsWith('/code ') || content === '/code' || content.startsWith('/act')) {
       mode = 'build'
-      content = content.slice(6)
+      setActPhase(true)
+      content = content.startsWith('/code ')
+        ? content.slice(6)
+        : content.startsWith('/act ')
+          ? content.slice(5)
+          : content.replace(/^\/(code|act)\s*/i, '') || 'Continue in Act mode'
     } else if (content.startsWith('/kb ')) {
       mode = 'research'
       content = content.slice(4)
@@ -426,12 +439,14 @@ export default function App() {
       return
     }
 
+    const sendMode =
+      mode === 'chat' && agentMode ? (actPhase ? 'build' : 'plan') : mode
     const result = (await window.triCass.chatSend({
       sessionId: activeId,
       content,
       model,
       config: { ...config, imageGeneration: forceImage || config.imageGeneration },
-      mode,
+      mode: sendMode,
       agentMode,
       useKb,
       selectedTemplateId,
@@ -789,22 +804,40 @@ export default function App() {
                           {collapsed ? 'Show more' : 'Collapse'}
                         </button>
                       ) : null}
-                      {m.projectPath ? (
+                      {m.projectPath || m.checkpointId ? (
                         <div className="row-between" style={{ marginTop: 8, gap: 8, flexWrap: 'wrap' }}>
-                          <button
-                            className="btn primary"
-                            type="button"
-                            onClick={() =>
-                              void window.triCass.templatesOpenFolder(m.projectPath!).then(() =>
-                                flash('Opened folder')
-                              )
-                            }
-                          >
-                            Open folder
-                          </button>
-                          <span style={{ color: 'var(--text-muted)', fontSize: '0.85rem' }}>
-                            {m.projectPath}
-                          </span>
+                          {m.projectPath ? (
+                            <button
+                              className="btn primary"
+                              type="button"
+                              onClick={() =>
+                                void window.triCass.templatesOpenFolder(m.projectPath!).then(() =>
+                                  flash('Opened folder')
+                                )
+                              }
+                            >
+                              Open folder
+                            </button>
+                          ) : null}
+                          {m.checkpointId ? (
+                            <button
+                              className="btn"
+                              type="button"
+                              onClick={() =>
+                                void window.triCass.checkpointRollback(m.checkpointId!).then((r) => {
+                                  const ok = (r as { ok?: boolean }).ok
+                                  flash(ok ? 'Undid agent turn (checkpoint restored)' : 'Undo failed')
+                                })
+                              }
+                            >
+                              Undo agent turn
+                            </button>
+                          ) : null}
+                          {m.projectPath ? (
+                            <span style={{ color: 'var(--text-muted)', fontSize: '0.85rem' }}>
+                              {m.projectPath}
+                            </span>
+                          ) : null}
                         </div>
                       ) : null}
                       {m.paths?.length ? (
@@ -1018,6 +1051,34 @@ export default function App() {
                       >
                         Write files {agentMode ? 'on' : 'off'}
                       </button>
+                      {agentMode ? (
+                        <button
+                          className={`tool-toggle ${actPhase ? 'on' : ''}`}
+                          type="button"
+                          title="Plan forbids file mutation; Act allows writes. Chat context is kept."
+                          onClick={() => setActPhase((v) => !v)}
+                        >
+                          {actPhase ? 'Act' : 'Plan'}
+                        </button>
+                      ) : null}
+                      {lastCheckpointId ? (
+                        <button
+                          className="tool-toggle"
+                          type="button"
+                          title="Restore baseline checkpoint from last agent turn"
+                          onClick={() =>
+                            void window.triCass.checkpointRollback(lastCheckpointId).then((r) => {
+                              flash(
+                                (r as { ok?: boolean }).ok
+                                  ? 'Undid last agent turn'
+                                  : 'No checkpoint to restore'
+                              )
+                            })
+                          }
+                        >
+                          Undo turn
+                        </button>
+                      ) : null}
                       <button
                         className={`tool-toggle ${useKb ? 'on' : ''}`}
                         type="button"
