@@ -3,6 +3,7 @@ import {
   appendFileSync,
   existsSync,
   mkdirSync,
+  readdirSync,
   readFileSync,
   statSync,
   writeFileSync
@@ -51,6 +52,11 @@ import {
 } from './searchWorkspace'
 import { withProjectLock } from './agentLock'
 import { detectRuntimes, formatRuntimeGuidance } from './runtimes'
+import {
+  checkScaffoldCoherence,
+  formatCoherenceIssues,
+  isStubHtml
+} from './scaffoldCoherence'
 
 export type AgentPhase = 'plan' | 'act'
 
@@ -63,6 +69,8 @@ export type AgentRunOpts = {
   onStep?: (step: AgentStep) => void
   forceKind?: Exclude<ScaffoldKind, null> | null
   selectedTemplateId?: string | null
+  /** Already-copied project — customise in place instead of re-applying template/scaffold */
+  boundProjectPath?: string | null
   /** Plan mode forbids mutating tools; Act allows them. Create intents force Act. */
   phase?: AgentPhase
 }
@@ -186,6 +194,16 @@ async function execTool(
           }
         }
         const content = call.args.content || ''
+        // Refuse stub homepage overwrites that break coherent scaffolds
+        if (/\.html?$/i.test(path) && /(^|[\\/])(index|home)\.html?$/i.test(path) && isStubHtml(content)) {
+          if (existsSync(path) && !isStubHtml(readFileSync(path, 'utf8'))) {
+            return {
+              text: `refused stub overwrite of ${path} — keep the existing layout; use edit_file / apply_diff for copy/colour changes`,
+              error: true,
+              path
+            }
+          }
+        }
         // Long content: write in chunks so we never silently truncate
         const CHUNK = 64_000
         if (content.length <= CHUNK) {
@@ -423,6 +441,23 @@ export function postWriteCheck(path: string): string {
         return `html warning: ${path} missing doctype/html`
       }
       if (!/<\/html>/i.test(body)) return `html warning: ${path} unclosed html`
+      if (/(^|[\\/])(index|home)\.html?$/i.test(path) && isStubHtml(body)) {
+        return `html warning: ${path} looks like a stub homepage`
+      }
+      // Walk up a few parents looking for a project root with sibling HTML
+      let probe = join(path, '..')
+      for (let i = 0; i < 4; i++) {
+        try {
+          const coh = checkScaffoldCoherence(probe)
+          if (coh.issues.length && existsSync(join(probe, 'index.html'))) {
+            return `coherence warning:\n${formatCoherenceIssues(coh.issues.slice(0, 6))}`
+          }
+          if (existsSync(join(probe, 'package.json')) || existsSync(join(probe, 'index.html'))) break
+        } catch {
+          /* ignore */
+        }
+        probe = join(probe, '..')
+      }
     }
     if (/\.json$/i.test(path)) {
       JSON.parse(readText(path, 200_000))
@@ -430,6 +465,55 @@ export function postWriteCheck(path: string): string {
     return `ok ${path} (${st.size} bytes)`
   } catch (err) {
     return `check failed: ${err instanceof Error ? err.message : String(err)}`
+  }
+}
+
+function ensureCoherentOrRestore(
+  projectPath: string,
+  baselineId: string | undefined,
+  steps: AgentStep[],
+  onStep?: (step: AgentStep) => void
+): { ok: boolean; restored: boolean; files: string[] } {
+  const coh = checkScaffoldCoherence(projectPath)
+  if (coh.ok) {
+    const files = verifyFilesOnDisk(
+      walkProjectFiles(projectPath)
+    ).ok
+    return { ok: true, restored: false, files }
+  }
+  emit(steps, onStep, 'error', `Coherence failed:\n${formatCoherenceIssues(coh.issues)}`)
+  if (baselineId) {
+    const rb = rollbackCheckpoint(baselineId)
+    if (rb.ok) {
+      emit(steps, onStep, 'observe', `Restored coherent scaffold checkpoint ${baselineId}`)
+      const files = verifyFilesOnDisk(walkProjectFiles(projectPath)).ok
+      return { ok: true, restored: true, files }
+    }
+  }
+  return { ok: false, restored: false, files: [] }
+}
+
+function walkProjectFiles(projectPath: string, out: string[] = []): string[] {
+  if (!existsSync(projectPath)) return out
+  for (const name of readdirSyncSafe(projectPath)) {
+    if (name === 'node_modules' || name === '.git') continue
+    const full = join(projectPath, name)
+    try {
+      const st = statSync(full)
+      if (st.isDirectory()) walkProjectFiles(full, out)
+      else out.push(full)
+    } catch {
+      /* skip */
+    }
+  }
+  return out
+}
+
+function readdirSyncSafe(dir: string): string[] {
+  try {
+    return readdirSync(dir)
+  } catch {
+    return []
   }
 }
 
@@ -515,7 +599,104 @@ async function runCodingAgentInner(opts: AgentRunOpts): Promise<AgentResult> {
     emit(steps, opts.onStep, 'plan', 'Create intent — write-files mode forced (no prose-only done)')
   }
 
-  // Selected template → copy then optionally customise
+  // Bound project already from a prior Use / create — edit in place (no second copy)
+  if (opts.boundProjectPath && existsSync(opts.boundProjectPath) && !opts.forceKind) {
+    const projectPath = opts.boundProjectPath
+    const projectName = basename(projectPath)
+    emit(steps, opts.onStep, 'plan', `Editing bound project in place: ${projectPath}`)
+    const baseline = createCheckpoint(projectPath, 'before-bound-edit')
+    const maxSteps = resolveMaxAgentSteps(opts.config.maxAgentSteps)
+    const stuckLimit = opts.config.stuckErrorLimit ?? STUCK_ERROR_LIMIT
+    const autoRestore = opts.config.autoRestoreOnStuck !== false
+    const stuck: StuckState = { lastError: '', count: 0 }
+    const messages: Array<{ role: string; content: string }> = [
+      {
+        role: 'user',
+        content:
+          `Project already exists at ${projectPath}. Customise it in place — do NOT create a new folder.\n` +
+          `Keep asset paths coherent (same CSS/JS hrefs that exist on disk). Never replace index.html with a stub.\n` +
+          `User request: ${opts.prompt}\n` +
+          `Use grammar tools (edit_file / apply_diff preferred). Call finish when done.`
+      }
+    ]
+    try {
+      for (let i = 0; i < maxSteps; i++) {
+        if (opts.signal?.aborted) break
+        const system = loadProjectRules(projectPath, GRAMMAR_SYSTEM)
+        const reply = await chatOnceResilient(messages, {
+          model: opts.model,
+          temperature: Math.min(opts.config.temperature, 0.4),
+          topP: opts.config.topP,
+          maxTokens: Math.min(opts.config.maxTokens, 2048),
+          system,
+          format: 'json',
+          signal: opts.signal
+        })
+        const parsed = parseGrammarReply(reply)
+        if (parsed.kind !== 'call') {
+          messages.push({ role: 'assistant', content: reply })
+          messages.push({ role: 'user', content: 'Observation: invalid tool JSON — retry with one tool call' })
+          continue
+        }
+        const call = parsed.call
+        emit(steps, opts.onStep, 'tool', `${call.tool} ${JSON.stringify(call.args).slice(0, 180)}`)
+        if (call.tool === 'finish') {
+          const ensured = ensureCoherentOrRestore(projectPath, baseline.id, steps, opts.onStep)
+          emit(steps, opts.onStep, 'done', call.args.message || 'Updated project')
+          return {
+            ok: ensured.ok,
+            projectPath,
+            steps,
+            message:
+              (call.args.message || `Updated project at ${projectPath}`) +
+              (ensured.restored ? '\n\n(Restored coherent baseline after a bad edit.)' : '') +
+              `\n\n**Files**\n${fileInventory(ensured.files.slice(0, 40))}`,
+            filesCreated: ensured.files,
+            checkpointId: baseline.id
+          }
+        }
+        const result = await withToolTimeout(call.tool, TOOL_TIMEOUT_MS, () =>
+          execTool(call, projectName, opts.chatId, phase)
+        )
+        const obs = formatObservation(call.tool, result.text, result.path)
+        emit(steps, opts.onStep, result.error ? 'error' : 'observe', obs, result.path)
+        if (result.files) filesCreated.push(...result.files)
+        if (result.path) filesCreated.push(result.path)
+        messages.push({ role: 'assistant', content: reply })
+        messages.push({ role: 'user', content: `Observation:\n${obs}` })
+        if (result.error && noteStuck(stuck, result.text, stuckLimit)) {
+          return stuckStop({
+            steps,
+            opts,
+            projectPath,
+            filesCreated,
+            baselineId: baseline.id,
+            autoRestore,
+            stuckLimit
+          })
+        }
+        if (!result.error) clearStuck(stuck)
+      }
+    } catch (err) {
+      emit(
+        steps,
+        opts.onStep,
+        'observe',
+        `Bound edit skipped (${err instanceof Error ? err.message : String(err)})`
+      )
+    }
+    const ensured = ensureCoherentOrRestore(projectPath, baseline.id, steps, opts.onStep)
+    return {
+      ok: ensured.ok,
+      projectPath,
+      steps,
+      message: `Updated bound project at \`${projectPath}\`.${ensured.restored ? ' Restored coherent baseline after bad edits.' : ''}`,
+      filesCreated: ensured.files.length ? ensured.files : verifyFilesOnDisk(filesCreated).ok,
+      checkpointId: baseline.id
+    }
+  }
+
+  // Selected template → copy once, then user keeps chatting against bound path
   if (opts.selectedTemplateId) {
     const tpl = getTemplate(opts.selectedTemplateId)
     emit(steps, opts.onStep, 'plan', `Using template: ${tpl?.name || opts.selectedTemplateId}`)
@@ -532,6 +713,10 @@ async function runCodingAgentInner(opts: AgentRunOpts): Promise<AgentResult> {
     filesCreated.push(...applied.files)
     for (const f of applied.files.slice(0, 12)) {
       emit(steps, opts.onStep, 'write', `Copied ${basename(f)}`, f)
+    }
+    const coh = checkScaffoldCoherence(applied.projectPath)
+    if (!coh.ok) {
+      emit(steps, opts.onStep, 'observe', `Template coherence notes:\n${formatCoherenceIssues(coh.issues)}`)
     }
     emit(
       steps,
@@ -664,6 +849,8 @@ async function runCodingAgentInner(opts: AgentRunOpts): Promise<AgentResult> {
           role: 'user',
           content:
             `Project already scaffolded at ${scaffold.projectPath} with ${verifiedScaffold.ok.length} real files.\n` +
+            `The tree is coherent (matching CSS/JS paths). Prefer edit_file/apply_diff for copy/colours.\n` +
+            `NEVER replace index.html with a stub. NEVER invent a new stylesheet name (keep existing hrefs).\n` +
             `User request: ${opts.prompt}\n` +
             (kb ? `\n${kb}\n` : '') +
             `Improve with grammar tool calls only (write_file/edit_file/apply_diff/…). ` +
@@ -743,16 +930,26 @@ async function runCodingAgentInner(opts: AgentRunOpts): Promise<AgentResult> {
             }
             continue
           }
+          const ensured = ensureCoherentOrRestore(
+            scaffold.projectPath,
+            baseline.id,
+            steps,
+            opts.onStep
+          )
           createCheckpoint(scaffold.projectPath, 'after-polish')
           emit(steps, opts.onStep, 'done', call.args.message || 'Finished')
+          const files = ensured.files.length ? ensured.files : verified.ok
           return {
-            ok: true,
+            ok: ensured.ok,
             projectPath: scaffold.projectPath,
             steps,
             message:
               (call.args.message || `Created ${kind} at ${scaffold.projectPath}`) +
-              `\n\n**Files on disk**\n${fileInventory(verified.ok)}`,
-            filesCreated: verified.ok,
+              (ensured.restored
+                ? '\n\n(Polish broke asset paths — restored the coherent scaffold.)'
+                : '') +
+              `\n\n**Files on disk**\n${fileInventory(files)}`,
+            filesCreated: files,
             checkpointId: baseline.id
           }
         }
@@ -806,7 +1003,10 @@ async function runCodingAgentInner(opts: AgentRunOpts): Promise<AgentResult> {
       )
     }
 
-    const verified = verifyFilesOnDisk(filesCreated)
+    const ensured = ensureCoherentOrRestore(scaffold.projectPath, baseline.id, steps, opts.onStep)
+    const verified = {
+      ok: ensured.files.length ? ensured.files : verifyFilesOnDisk(filesCreated).ok
+    }
     if (verified.ok.length === 0) {
       emit(steps, opts.onStep, 'error', 'Create intent failed — zero files verified')
       return {
@@ -834,7 +1034,13 @@ async function runCodingAgentInner(opts: AgentRunOpts): Promise<AgentResult> {
       ok: true,
       projectPath: scaffold.projectPath,
       steps,
-      message: `Created **${title}** (${kind}) with ${verified.ok.length} files at \`${scaffold.projectPath}\`.\n\n**Files**\n${tree}\n\n${howToFor(kind)}\n\nYou don’t need to code — just ask for changes in plain English.`,
+      message:
+        `Created **${title}** (${kind}) with ${verified.ok.length} files at \`${scaffold.projectPath}\`.\n\n` +
+        `**Files**\n${tree}\n\n${howToFor(kind)}\n\n` +
+        (ensured.restored
+          ? 'Polish was rolled back to keep CSS/JS paths coherent.\n\n'
+          : '') +
+        `You don’t need to code — just ask for changes in plain English.`,
       filesCreated: verified.ok,
       checkpointId: baseline.id
     }

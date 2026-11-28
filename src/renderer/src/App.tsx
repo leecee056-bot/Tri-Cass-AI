@@ -170,6 +170,9 @@ export default function App() {
   const [selectMode, setSelectMode] = useState(false)
   const [selectedMsgIds, setSelectedMsgIds] = useState<string[]>([])
   const [chatFolders, setChatFolders] = useState<string[]>(['Inbox'])
+  const [showArchived, setShowArchived] = useState(false)
+  const [editingTitle, setEditingTitle] = useState(false)
+  const [titleDraft, setTitleDraft] = useState('')
   const [wallpapers, setWallpapers] = useState<WallpaperRef[]>([])
   const [wallpaperUrl, setWallpaperUrl] = useState<string | null>(null)
   const bottomRef = useRef<HTMLDivElement>(null)
@@ -189,6 +192,13 @@ export default function App() {
     const q = query.trim().toLowerCase()
     return sessions
       .filter((s) => !s.archived)
+      .filter((s) => !q || s.title.toLowerCase().includes(q))
+  }, [sessions, query])
+
+  const archivedSessions = useMemo(() => {
+    const q = query.trim().toLowerCase()
+    return sessions
+      .filter((s) => s.archived)
       .filter((s) => !q || s.title.toLowerCase().includes(q))
   }, [sessions, query])
 
@@ -278,6 +288,19 @@ export default function App() {
   }, [activeId])
 
   useEffect(() => {
+    function onKey(e: KeyboardEvent) {
+      if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'n' && !e.shiftKey) {
+        const t = e.target as HTMLElement | null
+        if (t && (t.tagName === 'INPUT' || t.tagName === 'TEXTAREA' || t.isContentEditable)) return
+        e.preventDefault()
+        void newChat()
+      }
+    }
+    window.addEventListener('keydown', onKey)
+    return () => window.removeEventListener('keydown', onKey)
+  }, [sessions, busy])
+
+  useEffect(() => {
     if (!userScrolledUp.current) bottomRef.current?.scrollIntoView({ behavior: 'smooth' })
   }, [messages, agentLog])
 
@@ -355,15 +378,22 @@ export default function App() {
   async function selectSession(id: string) {
     setPanel('chat')
     setActiveId(id)
+    setEditingTitle(false)
     const session = await window.triCass.getSession(id)
     loadMessages(session)
     setDraft(session?.draft || '')
     setAgentMode(session?.agentMode !== false)
     if (session?.model) setModel(session.model)
+    setSelectedTemplateId(session?.selectedTemplateId || null)
+    if (session?.projectPath) setRunProjectPath(session.projectPath)
     requestAnimationFrame(() => inputRef.current?.focus())
   }
 
   async function newChat() {
+    if (busy) {
+      flash('Wait for the current reply to finish')
+      return
+    }
     // Reuse an existing empty "New Chat" instead of stacking duplicates
     const idle = sessions.find(
       (s) => !s.archived && s.title === 'New Chat' && (s.messages?.length || 0) === 0
@@ -373,6 +403,7 @@ export default function App() {
       setMessages([])
       setDraft(idle.draft || '')
       setAttachments([])
+      setSelectedTemplateId(null)
       setPanel('chat')
       setAgentMode(idle.agentMode !== false)
       if (idle.model) setModel(idle.model)
@@ -385,9 +416,37 @@ export default function App() {
     setMessages([])
     setDraft('')
     setAttachments([])
+    setSelectedTemplateId(null)
     setPanel('chat')
     setAgentMode(true)
     requestAnimationFrame(() => inputRef.current?.focus())
+  }
+
+  async function startWebsite() {
+    await newChat()
+    setPanel('chat')
+    queueDraft('Create a website in my workspace')
+    requestAnimationFrame(() => inputRef.current?.focus())
+  }
+
+  async function startApp() {
+    await newChat()
+    setPanel('chat')
+    queueDraft('Create a Node app with tests')
+    requestAnimationFrame(() => inputRef.current?.focus())
+  }
+
+  async function commitTitle(id: string, raw: string) {
+    const title = raw.trim() || 'New Chat'
+    await window.triCass.renameSession(id, title)
+    setEditingTitle(false)
+    await refreshSessions()
+  }
+
+  async function unarchiveChat(session: ChatSession) {
+    await window.triCass.updateSession({ ...session, archived: false })
+    await refreshSessions()
+    await selectSession(session.id)
   }
 
   function queueDraft(value: string) {
@@ -581,9 +640,24 @@ export default function App() {
       <div className={`shell ${sidebarOpen ? '' : 'collapsed'}`}>
         <aside className="sidebar">
           <div className="sidebar-inner">
-            <button className="btn primary block" type="button" onClick={() => void newChat()}>
+            <button
+              className="btn primary block"
+              type="button"
+              disabled={busy}
+              title={busy ? 'Wait for the current reply' : 'New chat (Ctrl+N)'}
+              onClick={() => void newChat()}
+            >
               + New chat
             </button>
+            <div className="entry-row">
+              <button className="btn ghost block" type="button" disabled={busy} onClick={() => void startWebsite()}>
+                New website
+              </button>
+              <button className="btn ghost block" type="button" disabled={busy} onClick={() => void startApp()}>
+                New app
+              </button>
+            </div>
+            <p className="sidebar-save-hint">Chats save automatically</p>
             <input
               className="search"
               placeholder="Search chats"
@@ -652,8 +726,9 @@ export default function App() {
                 <div key={s.id} className={`chat-item ${s.id === activeId ? 'active' : ''}`} role="button" tabIndex={0}
                   onClick={() => void selectSession(s.id)}
                   onKeyDown={(e) => e.key === 'Enter' && void selectSession(s.id)}
+                  title={s.title}
                 >
-                  <span>
+                  <span className="chat-item-title">
                     {s.pinned ? <span className="pin">📌 </span> : null}
                     {s.title}
                   </span>
@@ -686,6 +761,34 @@ export default function App() {
                   </div>
                 </div>
               ))}
+              {archivedSessions.length ? (
+                <div className="archived-block">
+                  <button
+                    className="nav-item"
+                    type="button"
+                    onClick={() => setShowArchived((v) => !v)}
+                  >
+                    {showArchived ? '▾' : '▸'} Archived ({archivedSessions.length})
+                  </button>
+                  {showArchived
+                    ? archivedSessions.map((s) => (
+                        <div key={s.id} className={`chat-item archived ${s.id === activeId ? 'active' : ''}`}>
+                          <span className="chat-item-title" title={s.title}>{s.title}</span>
+                          <div className="chat-actions">
+                            <button
+                              className="icon-btn"
+                              type="button"
+                              title="Restore"
+                              onClick={() => void unarchiveChat(s)}
+                            >
+                              ⬆
+                            </button>
+                          </div>
+                        </div>
+                      ))
+                    : null}
+                </div>
+              ) : null}
             </div>
           </div>
         </aside>
@@ -696,7 +799,35 @@ export default function App() {
               <button className="icon-btn" type="button" title="Toggle sidebar" onClick={() => setSidebarOpen((v) => !v)}>
                 ☰
               </button>
-              <h1 className="thread-title">{activeSession?.title || 'New chat'}</h1>
+              {editingTitle && activeId ? (
+                <input
+                  className="thread-title-input"
+                  value={titleDraft}
+                  aria-label="Rename chat"
+                  autoFocus
+                  onChange={(e) => setTitleDraft(e.target.value)}
+                  onBlur={() => void commitTitle(activeId, titleDraft)}
+                  onKeyDown={(e) => {
+                    if (e.key === 'Enter') {
+                      e.preventDefault()
+                      void commitTitle(activeId, titleDraft)
+                    }
+                    if (e.key === 'Escape') setEditingTitle(false)
+                  }}
+                />
+              ) : (
+                <button
+                  type="button"
+                  className="thread-title-btn"
+                  title="Click to rename"
+                  onClick={() => {
+                    setTitleDraft(activeSession?.title || 'New Chat')
+                    setEditingTitle(true)
+                  }}
+                >
+                  <h1 className="thread-title">{activeSession?.title || 'New chat'}</h1>
+                </button>
+              )}
             </div>
             <div className="header-actions">
               <select
@@ -743,7 +874,21 @@ export default function App() {
                     <div className="empty" aria-label="Tri Cass AI home">
                       <img className="empty-mark" src="./brand/mascot-lg.png" alt="" width={96} height={96} />
                       <h2>Tri Cass AI</h2>
-                      <p>Local chat that can write real projects on your machine.</p>
+                      <p>Local chat that can write real projects on your machine. Chats save automatically.</p>
+                      <div className="empty-cta-row">
+                        <button className="btn primary" type="button" onClick={() => void newChat()}>
+                          + New chat
+                        </button>
+                        <button className="btn" type="button" onClick={() => void startWebsite()}>
+                          New website
+                        </button>
+                        <button className="btn" type="button" onClick={() => void startApp()}>
+                          New app
+                        </button>
+                        <button className="btn ghost" type="button" onClick={() => setPanel('templates')}>
+                          Use a template
+                        </button>
+                      </div>
                       {!ollama.ok && (
                         <div className="banner warn">
                           Ollama is offline. Install from <strong>ollama.com</strong>, run <code>ollama serve</code>, then download a model from Models.
@@ -1193,9 +1338,31 @@ export default function App() {
                           className="tool-toggle on"
                           type="button"
                           title="Clear selected template"
-                          onClick={() => setSelectedTemplateId(null)}
+                          onClick={() => {
+                            setSelectedTemplateId(null)
+                            if (activeId) {
+                              void window.triCass.sessionsSetProject(
+                                activeId,
+                                activeSession?.projectPath || null,
+                                null
+                              )
+                            }
+                          }}
                         >
                           Template selected
+                        </button>
+                      ) : null}
+                      {activeSession?.projectPath ? (
+                        <button
+                          className="tool-toggle on"
+                          type="button"
+                          title={activeSession.projectPath}
+                          onClick={() => {
+                            setRunProjectPath(activeSession.projectPath!)
+                            setPanel('run')
+                          }}
+                        >
+                          Project bound
                         </button>
                       ) : null}
                       <button className="tool-toggle" type="button" onClick={() => setSlashOpen((v) => !v)} title="Slash commands">/</button>
@@ -1207,7 +1374,9 @@ export default function App() {
                     )}
                   </div>
                 </div>
-                <div className="hint">Enter send · Shift+Enter newline · / for commands · local only</div>
+                <div className="hint">
+                  Enter send · Shift+Enter newline · / for commands · chats save automatically · local only
+                </div>
               </div>
             </>
           )}
@@ -1440,8 +1609,9 @@ export default function App() {
                     setWorkspace(await window.triCass.workspacePin(workspace.root, true) as WorkspaceInfo)
                     flash('Pinned workspace')
                   }}>Pin workspace</button>
-                  <button className="btn" type="button" onClick={() => { setPanel('chat'); queueDraft('Create a website in my workspace'); inputRef.current?.focus() }}>New website…</button>
-                  <button className="btn" type="button" onClick={() => { setPanel('chat'); queueDraft('Create a Node app with tests'); inputRef.current?.focus() }}>New app…</button>
+                  <button className="btn" type="button" onClick={() => void startWebsite()}>New website</button>
+                  <button className="btn" type="button" onClick={() => void startApp()}>New app</button>
+                  <button className="btn ghost" type="button" onClick={() => setPanel('templates')}>Start from template…</button>
                 </div>
                 <h3 style={{ marginTop: 24 }}>Projects</h3>
                 <ul>
@@ -1472,8 +1642,18 @@ export default function App() {
                 if (res.ok && res.projectPath) {
                   flash(`Copied to ${res.projectPath}`)
                   setSelectedTemplateId(id)
+                  setRunProjectPath(res.projectPath)
+                  if (activeId) {
+                    await window.triCass.sessionsSetProject(activeId, res.projectPath, id)
+                    await refreshSessions()
+                  }
                   await window.triCass.templatesOpenFolder(res.projectPath)
                   setWorkspace((await window.triCass.workspaceInfo()) as WorkspaceInfo)
+                  setPanel('chat')
+                  queueDraft(
+                    'Customise this template for my project — change colours and copy in plain English.'
+                  )
+                  inputRef.current?.focus()
                 } else flash(res.error || 'Failed')
               }}
               onEditTemplate={(id) => {

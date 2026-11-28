@@ -281,7 +281,7 @@ export function TemplatesPanel({
                     type="button"
                     onClick={() => onUseTemplate(t.id, t.name)}
                   >
-                    Use
+                    Use this template
                   </button>
                   <button className="btn" type="button" onClick={() => onEditTemplate(t.id)}>
                     AI edit

@@ -58,7 +58,9 @@ export function createSession(title = 'New Chat'): ChatSession {
     archived: false,
     model: null,
     draft: '',
-    agentMode: true
+    agentMode: true,
+    projectPath: null,
+    selectedTemplateId: null
   }
   sessions.unshift(session)
   saveSessions(sessions)
@@ -133,6 +135,19 @@ export function setSessionFolder(sessionId: string, folder: string | null): Chat
   const s = getSession(sessionId)
   if (!s) return null
   s.folder = folder
+  return updateSession(s)
+}
+
+/** Bind the workspace project the AI should edit for this chat. */
+export function setSessionProject(
+  sessionId: string,
+  projectPath: string | null,
+  selectedTemplateId?: string | null
+): ChatSession | null {
+  const s = getSession(sessionId)
+  if (!s) return null
+  s.projectPath = projectPath
+  if (selectedTemplateId !== undefined) s.selectedTemplateId = selectedTemplateId
   return updateSession(s)
 }
 

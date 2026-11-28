@@ -56,6 +56,7 @@ import {
   forkSessionFromMessage,
   deleteMessagePair,
   setSessionFolder,
+  setSessionProject,
   importSession,
   exportAllData
 } from './services/chatStore'
@@ -571,6 +572,19 @@ ipcMain.handle(
         send('chat:status', { sessionId, status: 'agent' })
         let result
         try {
+          const boundPath =
+            session?.projectPath &&
+            typeof session.projectPath === 'string' &&
+            session.projectPath.length
+              ? session.projectPath
+              : null
+          // Re-copy template only when this chat has no bound project yet
+          const templateId =
+            payload.selectedTemplateId &&
+            boundPath &&
+            session?.selectedTemplateId === payload.selectedTemplateId
+              ? null
+              : payload.selectedTemplateId
           result = await runCodingAgent({
             prompt: content,
             chatId: sessionId,
@@ -578,9 +592,10 @@ ipcMain.handle(
             config,
             signal: ac.signal,
             onStep: (step) => send('agent:step', { sessionId, step }),
-            selectedTemplateId: payload.selectedTemplateId,
+            selectedTemplateId: templateId,
+            boundProjectPath: boundPath,
             forceKind:
-              createIntent && !payload.selectedTemplateId
+              createIntent && !templateId && !boundPath
                 ? detectScaffoldIntent(content) || undefined
                 : undefined,
             phase: planOnly ? 'plan' : 'act'
@@ -617,6 +632,13 @@ ipcMain.handle(
                 }
               })
               .join('\n')
+        }
+        if (result.projectPath && !failedCreate) {
+          setSessionProject(
+            sessionId,
+            result.projectPath,
+            payload.selectedTemplateId ?? session?.selectedTemplateId ?? null
+          )
         }
         appendMessage(sessionId, 'assistant', assistantText, {
           kind: failedCreate ? 'error' : 'files',
@@ -777,6 +799,11 @@ ipcMain.handle('sessions:deletePair', async (_e, id: string, messageId: string) 
 )
 ipcMain.handle('sessions:setFolder', async (_e, id: string, folder: string | null) =>
   setSessionFolder(id, folder)
+)
+ipcMain.handle(
+  'sessions:setProject',
+  async (_e, id: string, projectPath: string | null, templateId?: string | null) =>
+    setSessionProject(id, projectPath, templateId)
 )
 ipcMain.handle('sessions:import', async (_e, raw: unknown) => importSession(raw))
 ipcMain.handle('data:exportAll', async () => {

@@ -75,6 +75,11 @@ export type TriCassAPI = {
   sessionsFork: (id: string, messageId: string) => Promise<unknown>
   sessionsDeletePair: (id: string, messageId: string) => Promise<unknown>
   sessionsSetFolder: (id: string, folder: string | null) => Promise<unknown>
+  sessionsSetProject: (
+    id: string,
+    projectPath: string | null,
+    templateId?: string | null
+  ) => Promise<unknown>
   sessionsImport: (raw: unknown) => Promise<unknown>
   dataExportAll: () => Promise<unknown>
   dataImportBackup: () => Promise<unknown>
@@ -186,6 +191,8 @@ const api: TriCassAPI = {
   sessionsFork: (id, messageId) => ipcRenderer.invoke('sessions:fork', id, messageId),
   sessionsDeletePair: (id, messageId) => ipcRenderer.invoke('sessions:deletePair', id, messageId),
   sessionsSetFolder: (id, folder) => ipcRenderer.invoke('sessions:setFolder', id, folder),
+  sessionsSetProject: (id, projectPath, templateId) =>
+    ipcRenderer.invoke('sessions:setProject', id, projectPath, templateId),
   sessionsImport: (raw) => ipcRenderer.invoke('sessions:import', raw),
   dataExportAll: () => ipcRenderer.invoke('data:exportAll'),
   dataImportBackup: () => ipcRenderer.invoke('data:importBackup'),

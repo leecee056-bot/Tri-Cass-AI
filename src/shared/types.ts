@@ -32,6 +32,10 @@ export type ChatSession = {
   /** Sidebar folder / project grouping */
   folder?: string | null
   parentId?: string | null
+  /** Bound workspace project the AI should edit in place */
+  projectPath?: string | null
+  /** Template id already applied into projectPath (avoid re-copy on next send) */
+  selectedTemplateId?: string | null
 }
 
 export type OllamaModel = {
