@@ -1,9 +1,11 @@
-import { basename } from 'node:path'
-import { existsSync, statSync } from 'node:fs'
+import { basename, join } from 'node:path'
+import { existsSync, mkdirSync, readFileSync, statSync, writeFileSync } from 'node:fs'
 import type { AgentResult, AgentStep, ChatConfig } from '../../shared/types'
 import { chatOnce } from './ollama'
 import {
   GRAMMAR_SYSTEM,
+  MUTATING_TOOLS,
+  PLAN_MODE_TOOLS,
   STUCK_ERROR_LIMIT,
   parseGrammarReply,
   resolveMaxAgentSteps,
@@ -23,7 +25,7 @@ import {
   listDir,
   readText,
   resolveInWorkspace,
-  runCommand,
+  runCommandDetailed,
   writeText,
   createProjectDir,
   slugifyProject
@@ -35,6 +37,15 @@ import { textToAscii, imageToAscii, saveAscii } from './asciiArt'
 import { createCheckpoint, rollbackCheckpoint } from './checkpoints'
 import { webSearch, fetchUrl } from './webFetch'
 import { isDangerousCommand } from './workspace'
+import {
+  formatSearchHits,
+  searchContent,
+  searchFilenames
+} from './searchWorkspace'
+import { withProjectLock } from './agentLock'
+import { detectRuntimes, formatRuntimeGuidance } from './runtimes'
+
+export type AgentPhase = 'plan' | 'act'
 
 export type AgentRunOpts = {
   prompt: string
@@ -43,8 +54,65 @@ export type AgentRunOpts = {
   config: ChatConfig
   signal?: AbortSignal
   onStep?: (step: AgentStep) => void
-          forceKind?: Exclude<ScaffoldKind, null> | null
+  forceKind?: Exclude<ScaffoldKind, null> | null
   selectedTemplateId?: string | null
+  /** Plan mode forbids mutating tools; Act allows them. Create intents force Act. */
+  phase?: AgentPhase
+}
+
+const TOOL_TIMEOUT_MS = 90_000
+
+async function chatOnceResilient(
+  messages: Array<{ role: string; content: string }>,
+  opts: Parameters<typeof chatOnce>[1]
+): Promise<string> {
+  let reply = await chatOnce(messages, opts)
+  if (!reply.trim()) {
+    // Retry once on empty model response
+    reply = await chatOnce(messages, { ...opts, format: opts.format })
+  }
+  if (!reply.trim() && opts.format) {
+    // Fallback parser path: retry without format=json
+    const { format: _f, ...rest } = opts
+    reply = await chatOnce(messages, rest)
+  }
+  return reply
+}
+
+function loadProjectRules(projectPath: string, baseSystem: string): string {
+  const candidates = [
+    join(projectPath, '.tri-cass-rules'),
+    join(projectPath, '.tri-cass', 'rules.md')
+  ]
+  for (const p of candidates) {
+    try {
+      if (existsSync(p) && statSync(p).isFile()) {
+        const body = readFileSync(p, 'utf8').trim()
+        if (body) return `${baseSystem}\n\n# Project rules (override)\n${body.slice(0, 6000)}`
+      }
+    } catch {
+      /* ignore */
+    }
+  }
+  return baseSystem
+}
+
+async function withToolTimeout<T>(
+  label: string,
+  ms: number,
+  fn: () => Promise<T>
+): Promise<T> {
+  let timer: ReturnType<typeof setTimeout> | undefined
+  try {
+    return await Promise.race([
+      fn(),
+      new Promise<T>((_, reject) => {
+        timer = setTimeout(() => reject(new Error(`tool timeout after ${ms}ms: ${label}`)), ms)
+      })
+    ])
+  } finally {
+    if (timer) clearTimeout(timer)
+  }
 }
 
 function emit(
@@ -75,7 +143,8 @@ function formatObservation(tool: string, text: string, path?: string): string {
 async function execTool(
   call: GrammarCall,
   projectName: string,
-  chatId: string
+  chatId: string,
+  phase: AgentPhase = 'act'
 ): Promise<{
   text: string
   path?: string
@@ -85,6 +154,19 @@ async function execTool(
   error?: boolean
 }> {
   const projectRoot = resolveInWorkspace('.', projectName)
+
+  if (phase === 'plan' && MUTATING_TOOLS.has(call.tool)) {
+    return {
+      text: `blocked in Plan mode: ${call.tool} — switch to Act (/code) or call save_plan`,
+      error: true
+    }
+  }
+  if (phase === 'plan' && !PLAN_MODE_TOOLS.has(call.tool)) {
+    return {
+      text: `tool not allowed in Plan mode: ${call.tool}`,
+      error: true
+    }
+  }
 
   try {
     switch (call.tool) {
@@ -125,11 +207,39 @@ async function execTool(
         if (isDangerousCommand(cmd)) {
           return { text: `blocked dangerous command: ${cmd}`, error: true }
         }
-        const out = await runCommand(projectRoot, cmd, 60_000, {
+        // Fail closed if required runtime missing for npm/python entrypoints
+        const lower = cmd.toLowerCase()
+        const rt = detectRuntimes()
+        if (/\b(npm|npx|node)\b/.test(lower) && !rt.node.ok) {
+          return { text: formatRuntimeGuidance(rt), error: true }
+        }
+        if (/\b(python3?|pip3?)\b/.test(lower) && !rt.python.ok) {
+          return { text: formatRuntimeGuidance(rt), error: true }
+        }
+        const out = await runCommandDetailed(projectRoot, cmd, 60_000, {
           autoApprove: true,
           onChunk: undefined
         })
-        return { text: `[cwd ${projectRoot}]\n${out}` }
+        return { text: out.text, error: out.exitCode !== 0 }
+      }
+      case 'search_content': {
+        const hits = searchContent(projectRoot, call.args.query || '', 40)
+        return { text: formatSearchHits(hits, projectRoot) }
+      }
+      case 'search_files': {
+        const hits = searchFilenames(projectRoot, call.args.query || '', 40)
+        return { text: formatSearchHits(hits, projectRoot) }
+      }
+      case 'save_plan': {
+        const dir = join(projectRoot, '.tri-cass')
+        mkdirSync(dir, { recursive: true })
+        const path = join(dir, 'plan.md')
+        writeFileSync(path, call.args.content || '', 'utf8')
+        return {
+          text: `saved plan (${(call.args.content || '').length} bytes)`,
+          path,
+          files: [path]
+        }
       }
       case 'search_knowledge': {
         const hits = searchKnowledge(chatId, call.args.query || '')
@@ -364,10 +474,20 @@ function stuckStop(args: {
  * Create intents MUST write real files — finish with zero files is a hard fail.
  */
 export async function runCodingAgent(opts: AgentRunOpts): Promise<AgentResult> {
+  return withProjectLock(`chat:${opts.chatId}`, () => runCodingAgentInner(opts), {
+    rejectIfBusy: true
+  })
+}
+
+async function runCodingAgentInner(opts: AgentRunOpts): Promise<AgentResult> {
   const steps: AgentStep[] = []
   const filesCreated: string[] = []
-  const mustCreate = isCreateFilesIntent(opts.prompt) || Boolean(opts.forceKind) || Boolean(opts.selectedTemplateId)
+  const mustCreate =
+    isCreateFilesIntent(opts.prompt) || Boolean(opts.forceKind) || Boolean(opts.selectedTemplateId)
+  // Create intents always Act; /plan alone uses Plan (no mutating tools).
+  const phase: AgentPhase = mustCreate ? 'act' : opts.phase === 'plan' ? 'plan' : 'act'
   emit(steps, opts.onStep, 'plan', `Workspace: ${getWorkspaceRoot()}`)
+  emit(steps, opts.onStep, 'plan', `Agent phase: ${phase}${mustCreate ? ' (create intent)' : ''}`)
   if (mustCreate) {
     emit(steps, opts.onStep, 'plan', 'Create intent — write-files mode forced (no prose-only done)')
   }
@@ -518,12 +638,13 @@ export async function runCodingAgent(opts: AgentRunOpts): Promise<AgentResult> {
 
       for (let i = 0; i < maxSteps; i++) {
         if (opts.signal?.aborted) break
-        const reply = await chatOnce(messages, {
+        const system = loadProjectRules(scaffold.projectPath, GRAMMAR_SYSTEM)
+        const reply = await chatOnceResilient(messages, {
           model: opts.model,
           temperature: Math.min(opts.config.temperature, 0.4),
           topP: opts.config.topP,
           maxTokens: Math.min(opts.config.maxTokens, 2048),
-          system: GRAMMAR_SYSTEM,
+          system,
           format: 'json',
           signal: opts.signal
         })
@@ -590,7 +711,9 @@ export async function runCodingAgent(opts: AgentRunOpts): Promise<AgentResult> {
             checkpointId: baseline.id
           }
         }
-        const result = await execTool(call, projectName, opts.chatId)
+        const result = await withToolTimeout(call.tool, TOOL_TIMEOUT_MS, () =>
+          execTool(call, projectName, opts.chatId, phase)
+        )
         const obs = formatObservation(call.tool, result.text, result.path)
         emit(steps, opts.onStep, result.error ? 'error' : 'observe', obs, result.path)
         if (result.files) filesCreated.push(...result.files)
@@ -745,14 +868,17 @@ export async function runCodingAgent(opts: AgentRunOpts): Promise<AgentResult> {
   )
 
   const kb = knowledgeContext(opts.chatId, opts.prompt)
+  const planHint =
+    phase === 'plan'
+      ? `You are in Plan mode. Use save_plan to write .tri-cass/plan.md, then finish. Mutating tools are blocked.`
+      : `Implement with grammar tools only (write_file / apply_diff first). finish is rejected until at least one file exists on disk.`
   const messages: Array<{ role: string; content: string }> = [
     {
       role: 'user',
       content:
         `Workspace project: ${projectPath}\nUser request: ${opts.prompt}\n` +
         (kb ? `\n${kb}\n` : '') +
-        `Implement with grammar tools only (write_file / apply_diff first). ` +
-        `finish is rejected until at least one file exists on disk. Prefer plain-English finish messages.`
+        `${planHint} Prefer plain-English finish messages.`
     }
   ]
 
@@ -761,6 +887,7 @@ export async function runCodingAgent(opts: AgentRunOpts): Promise<AgentResult> {
   const autoRestore = opts.config.autoRestoreOnStuck !== false
   const stuck: StuckState = { lastError: '', count: 0 }
   const slug = slugifyProject(projectName)
+  const system = loadProjectRules(projectPath, GRAMMAR_SYSTEM)
 
   try {
     for (let i = 0; i < maxSteps; i++) {
@@ -774,12 +901,12 @@ export async function runCodingAgent(opts: AgentRunOpts): Promise<AgentResult> {
           checkpointId: baseline.id
         }
       }
-      const reply = await chatOnce(messages, {
+      const reply = await chatOnceResilient(messages, {
         model: opts.model,
         temperature: Math.min(opts.config.temperature, 0.5),
         topP: opts.config.topP,
         maxTokens: Math.min(opts.config.maxTokens, 2048),
-        system: GRAMMAR_SYSTEM,
+        system,
         format: 'json',
         signal: opts.signal
       })
@@ -814,13 +941,22 @@ export async function runCodingAgent(opts: AgentRunOpts): Promise<AgentResult> {
       emit(steps, opts.onStep, 'tool', `${call.tool}`)
       if (call.tool === 'finish') {
         const verified = verifyFilesOnDisk(filesCreated)
-        if (verified.ok.length === 0) {
-          const errObs = 'finish rejected — zero files on disk'
+        const planOk =
+          phase === 'plan' &&
+          verified.ok.some((f) => f.replace(/\\/g, '/').endsWith('.tri-cass/plan.md'))
+        if (verified.ok.length === 0 && !planOk) {
+          const errObs =
+            phase === 'plan'
+              ? 'finish rejected — save_plan first'
+              : 'finish rejected — zero files on disk'
           emit(steps, opts.onStep, 'error', errObs)
           messages.push({ role: 'assistant', content: reply })
           messages.push({
             role: 'user',
-            content: 'Observation: finish rejected. Use write_file to create real files, then finish.'
+            content:
+              phase === 'plan'
+                ? 'Observation: finish rejected. Call save_plan with the plan content, then finish.'
+                : 'Observation: finish rejected. Use write_file to create real files, then finish.'
           })
           if (noteStuck(stuck, errObs, stuckLimit)) {
             return stuckStop({
@@ -846,13 +982,18 @@ export async function runCodingAgent(opts: AgentRunOpts): Promise<AgentResult> {
           checkpointId: baseline.id
         }
       }
-      const result = await execTool(call, slug, opts.chatId)
+      const result = await withToolTimeout(call.tool, TOOL_TIMEOUT_MS, () =>
+        execTool(call, slug, opts.chatId, phase)
+      )
       const obs = formatObservation(call.tool, result.text, result.path)
       emit(steps, opts.onStep, result.error ? 'error' : 'observe', obs, result.path)
       if (result.files) filesCreated.push(...result.files)
       if (
         result.path &&
-        (call.tool === 'write_file' || call.tool === 'edit_file' || call.tool === 'apply_diff')
+        (call.tool === 'write_file' ||
+          call.tool === 'edit_file' ||
+          call.tool === 'apply_diff' ||
+          call.tool === 'save_plan')
       ) {
         filesCreated.push(result.path)
         if (!result.error) {

@@ -85,6 +85,7 @@ export type TriCassAPI = {
   checkpointCreate: (projectPath: string, label?: string) => Promise<unknown>
   checkpointList: () => Promise<unknown>
   checkpointRollback: (id: string) => Promise<unknown>
+  runtimesDetect: () => Promise<unknown>
   templatesUndo: () => Promise<unknown>
   diagText: () => Promise<string>
   diagRam: () => Promise<number>
@@ -187,6 +188,7 @@ const api: TriCassAPI = {
     ipcRenderer.invoke('checkpoint:create', projectPath, label),
   checkpointList: () => ipcRenderer.invoke('checkpoint:list'),
   checkpointRollback: (id) => ipcRenderer.invoke('checkpoint:rollback', id),
+  runtimesDetect: () => ipcRenderer.invoke('runtimes:detect'),
   templatesUndo: () => ipcRenderer.invoke('templates:undo'),
   diagText: () => ipcRenderer.invoke('diag:text'),
   diagRam: () => ipcRenderer.invoke('diag:ram'),
