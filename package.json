@@ -1,6 +1,6 @@
 {
   "name": "tri-cass-ai",
-  "version": "0.1.2",
+  "version": "0.1.3",
   "private": false,
   "description": "Tri Cass AI \u2014 standalone local coding assistant for household PCs",
   "main": "./out/main/index.js",

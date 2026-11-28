@@ -1,5 +1,20 @@
 # Changelog
 
+## 0.1.3
+
+Coding-parity release for Lee test builds (HAP-139–144):
+
+- **Create-on-disk** — website/app intents force real files; prose-only “done” fails closed; Open folder + verify-on-disk
+- **Agent loop** — `apply_diff`, stuck×3 rollback, checkpoint hardening, post-write checks, plan/rules in scaffolds
+- **Plan ↔ Act** — `/plan` / `/code`, mutating tools blocked in Plan; `save_plan` → `.tri-cass/plan.md`
+- **Workspace search** — `search_content` / `search_files` with ignore files; shell exit/cwd/sandbox env
+- **Per-chat KB** — AnythingLLM-style attach/folder/detach, overlap chunking, size gauge, SSRF + network master switch
+- **Run panel** — npm install / start / stop, live stdout/stderr, copy path, file + HTML preview
+
+## 0.1.2
+
+Create-intent force real file writes (anti chat-theater).
+
 ## 0.1.0
 
 First Tri Cass AI release:
