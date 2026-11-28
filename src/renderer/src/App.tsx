@@ -31,6 +31,7 @@ type UiMessage = {
   createdAt?: number
   paths?: string[]
   citations?: string[]
+  projectPath?: string
 }
 
 type Panel = 'chat' | 'models' | 'knowledge' | 'workspace' | 'templates' | 'ascii' | 'settings' | 'about'
@@ -177,6 +178,8 @@ export default function App() {
           files?: string[]
           citations?: string[]
           runId?: string
+          projectPath?: string
+          ok?: boolean
         }
         if (p.sessionId !== activeIdRef.current) return
         streamBuf.current = ''
@@ -188,6 +191,7 @@ export default function App() {
             content: p.content,
             paths: p.files,
             citations: p.citations,
+            projectPath: p.projectPath,
             createdAt: Date.now()
           }
         ])
@@ -784,6 +788,24 @@ export default function App() {
                         >
                           {collapsed ? 'Show more' : 'Collapse'}
                         </button>
+                      ) : null}
+                      {m.projectPath ? (
+                        <div className="row-between" style={{ marginTop: 8, gap: 8, flexWrap: 'wrap' }}>
+                          <button
+                            className="btn primary"
+                            type="button"
+                            onClick={() =>
+                              void window.triCass.templatesOpenFolder(m.projectPath!).then(() =>
+                                flash('Opened folder')
+                              )
+                            }
+                          >
+                            Open folder
+                          </button>
+                          <span style={{ color: 'var(--text-muted)', fontSize: '0.85rem' }}>
+                            {m.projectPath}
+                          </span>
+                        </div>
                       ) : null}
                       {m.paths?.length ? (
                         <div className="paths">

@@ -187,6 +187,28 @@ export function verifyFilesOnDisk(paths: string[]): { ok: string[]; missing: str
   return { ok, missing }
 }
 
+/** Lightweight post-write check (Cline-slim auto-check). */
+export function postWriteCheck(path: string): string {
+  try {
+    if (!existsSync(path)) return `missing: ${path}`
+    const st = statSync(path)
+    if (!st.isFile() || st.size <= 0) return `empty: ${path}`
+    if (/\.html?$/i.test(path)) {
+      const body = readText(path, 4000)
+      if (!/<html[\s>]/i.test(body) && !/<!DOCTYPE/i.test(body)) {
+        return `html warning: ${path} missing doctype/html`
+      }
+      if (!/<\/html>/i.test(body)) return `html warning: ${path} unclosed html`
+    }
+    if (/\.json$/i.test(path)) {
+      JSON.parse(readText(path, 200_000))
+    }
+    return `ok ${path} (${st.size} bytes)`
+  } catch (err) {
+    return `check failed: ${err instanceof Error ? err.message : String(err)}`
+  }
+}
+
 function fileInventory(paths: string[]): string {
   return paths
     .map((f) => {
@@ -320,6 +342,7 @@ export async function runCodingAgent(opts: AgentRunOpts): Promise<AgentResult> {
     filesCreated.push(...scaffold.files)
     for (const f of scaffold.files) {
       emit(steps, opts.onStep, 'write', `Created ${basename(f)}`, f)
+      emit(steps, opts.onStep, 'observe', postWriteCheck(f), f)
     }
 
     const verifiedScaffold = verifyFilesOnDisk(filesCreated)
@@ -397,6 +420,14 @@ export async function runCodingAgent(opts: AgentRunOpts): Promise<AgentResult> {
         if (result.files) filesCreated.push(...result.files)
         if (result.path && (call.tool === 'write_file' || call.tool === 'edit_file')) {
           filesCreated.push(result.path)
+          const check = postWriteCheck(result.path)
+          emit(steps, opts.onStep, 'observe', check, result.path)
+          messages.push({ role: 'assistant', content: reply })
+          messages.push({
+            role: 'user',
+            content: `Observation:\n${result.text}\nPost-write check: ${check}`
+          })
+          continue
         }
         messages.push({ role: 'assistant', content: reply })
         messages.push({ role: 'user', content: `Observation:\n${result.text}` })

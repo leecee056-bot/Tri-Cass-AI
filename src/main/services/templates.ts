@@ -37,6 +37,9 @@ export function detectScaffoldIntent(prompt: string): ScaffoldKind {
     return 'game'
   }
   // "make me a website…", "create a site in a folder", etc.
+  if (/\bmake\s+(that|this|it)\s+(a\s+|an\s+)?(web\s*site|website|site|app)\b/.test(p)) {
+    return /\bapp\b/.test(p) && !/\b(web\s*site|website|site)\b/.test(p) ? 'app' : 'website'
+  }
   if (
     /\b(make|create|build|scaffold|generate|spin\s*up|set\s*up)\b[\s\S]{0,60}\b(web\s*site|website|landing\s*page|webpage|site)\b/.test(
       p
@@ -1139,20 +1142,50 @@ export function runScaffold(
   kind: Exclude<ScaffoldKind, null>,
   title: string
 ): { projectPath: string; files: string[] } {
+  let result: { projectPath: string; files: string[] }
   switch (kind) {
     case 'website':
-      return scaffoldWebsite(title)
+      result = scaffoldWebsite(title)
+      break
     case 'app':
-      return scaffoldApp(title)
+      result = scaffoldApp(title)
+      break
     case 'python':
-      return scaffoldPython(title)
+      result = scaffoldPython(title)
+      break
     case 'android':
-      return scaffoldAndroid(title)
+      result = scaffoldAndroid(title)
+      break
     case 'electron':
-      return scaffoldElectron(title)
+      result = scaffoldElectron(title)
+      break
     case 'game':
-      return scaffoldGame(title)
+      result = scaffoldGame(title)
+      break
     default:
-      return scaffoldApp(title)
+      result = scaffoldApp(title)
   }
+  // Cline-slim: plan + standing rules land with every create
+  result.files.push(
+    write(
+      join(result.projectPath, '.tri-cass', 'plan.md'),
+      `# Plan — ${title}\n\n` +
+        `- [x] Create ${kind} project folder\n` +
+        `- [x] Write starter files on disk\n` +
+        `- [ ] Customise content when the user asks\n` +
+        `- [ ] Open / run locally\n\n` +
+        `Workspace path: \`${result.projectPath}\`\n`
+    )
+  )
+  result.files.push(
+    write(
+      join(result.projectPath, '.tri-cass-rules'),
+      `# Tri Cass project rules\n` +
+        `- Prefer editing existing files over rewriting everything\n` +
+        `- Keep paths inside this project folder\n` +
+        `- After changes, leave the project runnable without a code editor\n` +
+        `- Never claim files exist unless they are on disk\n`
+    )
+  )
+  return result
 }
