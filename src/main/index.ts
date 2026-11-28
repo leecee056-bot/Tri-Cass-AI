@@ -82,6 +82,14 @@ import {
 } from './services/asciiArt'
 import { createCheckpoint, listCheckpoints, rollbackCheckpoint } from './services/checkpoints'
 import { detectRuntimes, formatRuntimeGuidance } from './services/runtimes'
+import {
+  getLastRun,
+  inspectProject,
+  readProjectFile,
+  startProjectRun,
+  stopProjectRun,
+  type RunAction
+} from './services/projectRun'
 import { buildDiagnostics, detectRamGb, detectFreeDiskRough } from './services/diagnostics'
 import { webSearch, fetchUrl } from './services/webFetch'
 import {
@@ -856,6 +864,36 @@ ipcMain.handle('workspace:touchRecent', async (_e, path: string) => {
   touchRecentWorkspace(path)
   return getWorkspaceInfo()
 })
+
+ipcMain.handle('project:inspect', async (_e, projectPath: string) => {
+  try {
+    return { ok: true, ...inspectProject(projectPath) }
+  } catch (err) {
+    return { ok: false, error: err instanceof Error ? err.message : String(err) }
+  }
+})
+ipcMain.handle(
+  'project:run',
+  async (_e, projectPath: string, action: RunAction, command?: string) => {
+    try {
+      const record = await startProjectRun(projectPath, action, {
+        command,
+        onChunk: (chunk) => send('project:runChunk', { ...chunk, projectPath })
+      })
+      send('project:runDone', record)
+      return { ok: true, run: record }
+    } catch (err) {
+      const error = err instanceof Error ? err.message : String(err)
+      send('project:runDone', { ok: false, error, projectPath })
+      return { ok: false, error }
+    }
+  }
+)
+ipcMain.handle('project:stop', async (_e, id?: string) => stopProjectRun(id))
+ipcMain.handle('project:lastRun', async () => getLastRun())
+ipcMain.handle('project:readFile', async (_e, projectPath: string, rel: string) =>
+  readProjectFile(projectPath, rel)
+)
 
 ipcMain.handle('tray:set', async (_e, enabled: boolean) => {
   const prefs = loadPrefs()

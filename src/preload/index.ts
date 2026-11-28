@@ -103,6 +103,11 @@ export type TriCassAPI = {
   wallpaperAdd: () => Promise<unknown>
   wallpaperRemove: (id: string) => Promise<unknown>
   wallpaperDataUrl: (id: string) => Promise<unknown>
+  projectInspect: (projectPath: string) => Promise<unknown>
+  projectRun: (projectPath: string, action: 'install' | 'start' | 'custom', command?: string) => Promise<unknown>
+  projectStop: (id?: string) => Promise<unknown>
+  projectLastRun: () => Promise<unknown>
+  projectReadFile: (projectPath: string, rel: string) => Promise<unknown>
   on: (channel: string, handler: (payload: unknown) => void) => () => void
 }
 
@@ -115,7 +120,9 @@ const allowed = new Set([
   'agent:step',
   'models:pullProgress',
   'kb:progress',
-  'templates:packProgress'
+  'templates:packProgress',
+  'project:runChunk',
+  'project:runDone'
 ])
 
 const api: TriCassAPI = {
@@ -208,6 +215,12 @@ const api: TriCassAPI = {
   wallpaperAdd: () => ipcRenderer.invoke('wallpapers:add'),
   wallpaperRemove: (id) => ipcRenderer.invoke('wallpapers:remove', id),
   wallpaperDataUrl: (id) => ipcRenderer.invoke('wallpapers:dataUrl', id),
+  projectInspect: (projectPath) => ipcRenderer.invoke('project:inspect', projectPath),
+  projectRun: (projectPath, action, command) =>
+    ipcRenderer.invoke('project:run', projectPath, action, command),
+  projectStop: (id) => ipcRenderer.invoke('project:stop', id),
+  projectLastRun: () => ipcRenderer.invoke('project:lastRun'),
+  projectReadFile: (projectPath, rel) => ipcRenderer.invoke('project:readFile', projectPath, rel),
   on: (channel, handler) => {
     if (!allowed.has(channel)) return () => undefined
     const listener = (_event: Electron.IpcRendererEvent, payload: unknown) => handler(payload)

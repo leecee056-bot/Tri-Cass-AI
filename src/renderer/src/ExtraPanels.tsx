@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
+// useRef used by ProjectRunPanel log scroll
 import type { ChatConfig } from '../../shared/types'
 
 type TemplateMeta = {
@@ -515,6 +516,251 @@ export function AboutPanel({
             Back to chat
           </button>
         </div>
+      </div>
+    </div>
+  )
+}
+
+type Inspect = {
+  ok?: boolean
+  error?: string
+  projectPath?: string
+  kind?: string
+  hasPackageJson?: boolean
+  startCommand?: string | null
+  installCommand?: string | null
+  files?: string[]
+  runtimes?: {
+    node: { ok: boolean; version?: string; guidance?: string }
+    python: { ok: boolean; version?: string; guidance?: string }
+  }
+}
+
+export function ProjectRunPanel({
+  projectPath,
+  workspaceRoot,
+  onPickProject,
+  onBack,
+  flash
+}: {
+  projectPath: string | null
+  workspaceRoot: string
+  onPickProject: (path: string) => void
+  onBack: () => void
+  flash: (msg: string) => void
+}) {
+  const [info, setInfo] = useState<Inspect | null>(null)
+  const [log, setLog] = useState('')
+  const [running, setRunning] = useState(false)
+  const [runId, setRunId] = useState<string | null>(null)
+  const [preview, setPreview] = useState<{ path: string; text: string } | null>(null)
+  const logRef = useRef<HTMLPreElement | null>(null)
+
+  useEffect(() => {
+    if (!projectPath) {
+      setInfo(null)
+      return
+    }
+    void window.triCass.projectInspect(projectPath).then((r) => setInfo(r as Inspect))
+  }, [projectPath])
+
+  useEffect(() => {
+    const offChunk = window.triCass.on('project:runChunk', (payload) => {
+      const p = payload as { stream: string; text: string }
+      setLog((prev) => (prev + p.text).slice(-180_000))
+    })
+    const offDone = window.triCass.on('project:runDone', (payload) => {
+      const r = payload as { id?: string; running?: boolean; exitCode?: number | null }
+      if (r.running === false) {
+        setRunning(false)
+        setRunId(null)
+      }
+    })
+    return () => {
+      offChunk()
+      offDone()
+    }
+  }, [])
+
+  useEffect(() => {
+    logRef.current?.scrollTo(0, logRef.current.scrollHeight)
+  }, [log])
+
+  async function run(action: 'install' | 'start') {
+    if (!projectPath) return
+    setLog('')
+    setRunning(true)
+    const res = (await window.triCass.projectRun(projectPath, action)) as {
+      ok: boolean
+      error?: string
+      run?: {
+        id: string
+        running: boolean
+        stdout?: string
+        stderr?: string
+        exitCode?: number | null
+      }
+    }
+    if (!res.ok) {
+      setRunning(false)
+      setLog((prev) => prev + `\nerror: ${res.error}\n`)
+      flash(res.error || 'Run failed')
+      return
+    }
+    setRunId(res.run?.id || null)
+    if (res.run && !res.run.running) setRunning(false)
+    if (action === 'install' && res.run) {
+      setLog(
+        (res.run.stdout || '') +
+          (res.run.stderr ? `\n${res.run.stderr}` : '') +
+          `\n[exit ${res.run.exitCode ?? '?'}]\n`
+      )
+      setRunning(false)
+    }
+  }
+
+  const projects = useMemo(() => {
+    if (!workspaceRoot) return [] as string[]
+    // Prefer current path; workspace.projects names need joining in parent — keep simple
+    return projectPath ? [projectPath] : []
+  }, [projectPath, workspaceRoot])
+
+  return (
+    <div className="messages panel-page">
+      <div className="messages-inner">
+        <h2 style={{ fontFamily: 'var(--font-serif)', marginTop: 0 }}>Run · project</h2>
+        <p style={{ color: 'var(--text-muted)' }}>
+          OpenHands-style panel: install, start, stop, and live stdout/stderr. Commands run with cwd locked to the
+          project folder (sandbox env).
+        </p>
+        {!projectPath ? (
+          <p style={{ color: 'var(--text-muted)' }}>
+            Create a project in chat first, then open <strong>Run panel</strong> from the success message — or paste a
+            path under your workspace.
+          </p>
+        ) : null}
+        <div className="field">
+          <label>
+            <span>Project path</span>
+          </label>
+          <input
+            value={projectPath || ''}
+            placeholder={`${workspaceRoot}/my-project`}
+            onChange={(e) => onPickProject(e.target.value.trim())}
+          />
+        </div>
+        <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', marginBottom: 12 }}>
+          <button
+            className="btn"
+            type="button"
+            disabled={!projectPath}
+            onClick={() =>
+              projectPath &&
+              void window.triCass.clipboardWrite(projectPath).then(() => flash('Copied project path'))
+            }
+          >
+            Copy path
+          </button>
+          <button
+            className="btn primary"
+            type="button"
+            disabled={!projectPath || running || !info?.installCommand}
+            onClick={() => void run('install')}
+          >
+            npm install
+          </button>
+          <button
+            className="btn primary"
+            type="button"
+            disabled={!projectPath || running || !info?.startCommand}
+            onClick={() => void run('start')}
+          >
+            Start
+          </button>
+          <button
+            className="btn danger"
+            type="button"
+            disabled={!running && !runId}
+            onClick={() =>
+              void window.triCass.projectStop(runId || undefined).then(() => {
+                setRunning(false)
+                setRunId(null)
+                flash('Stopped')
+              })
+            }
+          >
+            Stop
+          </button>
+          <button className="btn" type="button" onClick={onBack}>
+            Back to chat
+          </button>
+        </div>
+        {info?.ok === false ? (
+          <p style={{ color: 'var(--danger, #c44)' }}>{info.error}</p>
+        ) : null}
+        {info?.ok !== false && info?.projectPath ? (
+          <p style={{ color: 'var(--text-muted)', fontSize: '0.85rem' }}>
+            Kind: {info.kind} · start: <code>{info.startCommand || 'n/a'}</code>
+            {info.runtimes?.node?.ok === false ? ` · ${info.runtimes.node.guidance}` : ''}
+            {info.runtimes?.python?.ok === false ? ` · ${info.runtimes.python.guidance}` : ''}
+          </p>
+        ) : null}
+        <h3>Stdout / stderr</h3>
+        <pre
+          ref={logRef}
+          className="ascii-out"
+          style={{ minHeight: 160, maxHeight: 280, overflow: 'auto' }}
+          aria-label="Run output"
+        >
+          {log || (running ? 'Running…' : 'Output appears here after install/start')}
+        </pre>
+        <h3>Files</h3>
+        <ul style={{ maxHeight: 180, overflow: 'auto' }}>
+          {(info?.files || []).map((f) => (
+            <li key={f}>
+              <button
+                className="text-link"
+                type="button"
+                onClick={() => {
+                  if (!projectPath) return
+                  void window.triCass.projectReadFile(projectPath, f).then((r) => {
+                    const res = r as { ok: boolean; text?: string; error?: string }
+                    if (!res.ok) flash(res.error || 'Preview failed')
+                    else setPreview({ path: f, text: res.text || '' })
+                  })
+                }}
+              >
+                {f}
+              </button>
+            </li>
+          ))}
+          {!info?.files?.length ? (
+            <li style={{ color: 'var(--text-muted)' }}>No files listed yet</li>
+          ) : null}
+        </ul>
+        {preview ? (
+          <div style={{ marginTop: 12 }}>
+            <div className="row-between">
+              <strong>{preview.path}</strong>
+              <button className="btn" type="button" onClick={() => setPreview(null)}>
+                Close preview
+              </button>
+            </div>
+            {/\.html?$/i.test(preview.path) ? (
+              <iframe
+                title="HTML preview"
+                sandbox=""
+                srcDoc={preview.text}
+                style={{ width: '100%', height: 220, border: '1px solid var(--border)', marginTop: 8 }}
+              />
+            ) : (
+              <pre className="ascii-out" style={{ maxHeight: 220, overflow: 'auto' }}>
+                {preview.text.slice(0, 12_000)}
+              </pre>
+            )}
+          </div>
+        ) : null}
+        {projects.length ? null : null}
       </div>
     </div>
   )
