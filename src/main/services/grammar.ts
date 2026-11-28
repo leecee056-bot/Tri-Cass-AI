@@ -1,6 +1,7 @@
 export const GRAMMAR_TOOLS = [
   'write_file',
   'edit_file',
+  'apply_diff',
   'read_file',
   'list_dir',
   'run',
@@ -8,6 +9,7 @@ export const GRAMMAR_TOOLS = [
   'apply_template',
   'generate_image',
   'generate_ascii',
+  'restore_checkpoint',
   'finish'
 ] as const
 
@@ -18,13 +20,37 @@ export type GrammarCall = {
   args: Record<string, string>
 }
 
+export type ParseGrammarResult =
+  | { kind: 'call'; call: GrammarCall }
+  | { kind: 'unknown_tool'; tool: string; raw: string }
+  | { kind: 'missing_args'; tool: string; missing: string[]; raw: string }
+  | { kind: 'invalid'; reason: string }
+
+/** Default max tool steps; overridable via ChatConfig.maxAgentSteps or TRI_CASS_MAX_AGENT_STEPS. */
 export const MAX_GRAMMAR_STEPS = 12
+
+/** Identical error observation count before stuck stop (Cline-class). */
+export const STUCK_ERROR_LIMIT = 3
+
+const REQUIRED_ARGS: Partial<Record<GrammarToolName, string[]>> = {
+  write_file: ['path', 'content'],
+  edit_file: ['path', 'old', 'new'],
+  apply_diff: ['diff'],
+  read_file: ['path'],
+  run: ['command'],
+  search_knowledge: ['query'],
+  apply_template: ['id'],
+  generate_image: ['prompt'],
+  restore_checkpoint: ['id'],
+  finish: ['message']
+}
 
 export const GRAMMAR_SYSTEM = `You are Tri Cass AI, a local no-code coding agent. Reply with ONE JSON object only — no markdown fences, no prose.
 Shape: {"tool":"<name>","args":{...}}
 Tools (one per reply):
 - write_file: args path, content — create/overwrite under the project folder
-- edit_file: args path, old, new — replace first occurrence
+- edit_file: args path, old, new — replace a unique occurrence (fails if old matches 0 or 2+)
+- apply_diff: args diff — apply a unified diff (---/+++ @@ hunks) under the project
 - read_file: args path
 - list_dir: args path ("" = project root)
 - run: args command — run in project folder (node/npm/python preferred)
@@ -32,11 +58,12 @@ Tools (one per reply):
 - apply_template: args id, name — copy a library template into the workspace
 - generate_image: args prompt, size (512|768|1024) — local PNG writer
 - generate_ascii: args text, font OR image — figlet / image→ASCII
+- restore_checkpoint: args id — restore a prior checkpoint snapshot
 - finish: args message — done; message is shown to the user in plain English
 Prefer relative paths. Prefer short files. Never require the user to open a code editor.
 Refuse unsafe Android signing / Play Store credential requests clearly.
 Never reply with prose. Never call finish until at least one write_file (or scaffold) has created a real file on disk.
-If asked to make a website/app/folder, you MUST use write_file / apply_template tools — claiming “done” without tools is forbidden.
+If asked to make a website/app/folder, you MUST use write_file / apply_template / apply_diff tools — claiming “done” without tools is forbidden.
 Call finish only when the project exists on disk.`
 
 const TOOL_SET = new Set<string>(GRAMMAR_TOOLS)
@@ -68,18 +95,48 @@ export function extractJsonObject(text: string): string | null {
   return null
 }
 
+/** Legacy helper — returns a call only when fully valid. */
 export function parseGrammarCall(text: string): GrammarCall | null {
+  const r = parseGrammarReply(text)
+  return r.kind === 'call' ? r.call : null
+}
+
+export function parseGrammarReply(text: string): ParseGrammarResult {
   const raw = extractJsonObject(text)
-  if (!raw) return null
+  if (!raw) return { kind: 'invalid', reason: 'no JSON object' }
   try {
     const obj = JSON.parse(raw) as { tool?: string; args?: Record<string, unknown> }
-    if (!obj.tool || !TOOL_SET.has(obj.tool)) return null
+    if (!obj.tool || typeof obj.tool !== 'string') {
+      return { kind: 'invalid', reason: 'missing tool field' }
+    }
+    if (!TOOL_SET.has(obj.tool)) {
+      return { kind: 'unknown_tool', tool: obj.tool, raw }
+    }
+    const tool = obj.tool as GrammarToolName
     const args: Record<string, string> = {}
     for (const [k, v] of Object.entries(obj.args || {})) {
       args[k] = typeof v === 'string' ? v : JSON.stringify(v)
     }
-    return { tool: obj.tool as GrammarToolName, args }
+    const required = REQUIRED_ARGS[tool] || []
+    // Empty string is OK for content/new (clear file / delete substring); path/old/diff/etc. must be non-empty.
+    const allowEmpty = new Set(['content', 'new', 'message'])
+    const missingStrict = required.filter((k) => {
+      if (!(k in args)) return true
+      if (allowEmpty.has(k)) return false
+      return args[k] === ''
+    })
+    if (missingStrict.length) {
+      return { kind: 'missing_args', tool, missing: missingStrict, raw }
+    }
+    return { kind: 'call', call: { tool, args } }
   } catch {
-    return null
+    return { kind: 'invalid', reason: 'JSON parse failed' }
   }
+}
+
+export function resolveMaxAgentSteps(configMax?: number): number {
+  const env = Number(process.env.TRI_CASS_MAX_AGENT_STEPS || '')
+  if (Number.isFinite(env) && env > 0) return Math.min(64, Math.floor(env))
+  if (typeof configMax === 'number' && configMax > 0) return Math.min(64, Math.floor(configMax))
+  return MAX_GRAMMAR_STEPS
 }

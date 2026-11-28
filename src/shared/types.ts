@@ -140,6 +140,12 @@ export type ChatConfig = {
   wallpaperId?: string
   /** Custom wallpaper ids the user added */
   customWallpaperIds?: string[]
+  /** Max tool steps per agent turn (default 12). */
+  maxAgentSteps?: number
+  /** Identical error observations before stuck stop (default 3). */
+  stuckErrorLimit?: number
+  /** Auto-restore baseline checkpoint when stuck (default true). */
+  autoRestoreOnStuck?: boolean
 }
 
 export type WorkspaceInfo = {

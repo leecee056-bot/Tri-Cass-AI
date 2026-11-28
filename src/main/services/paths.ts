@@ -44,7 +44,10 @@ export const DEFAULT_CONFIG: ChatConfig = {
   proxyUrl: '',
   welcomeDismissed: false,
   voiceEnabled: false,
-  kbScope: 'chat'
+  kbScope: 'chat',
+  maxAgentSteps: 12,
+  stuckErrorLimit: 3,
+  autoRestoreOnStuck: true
 }
 
 function ensureDir(p: string): string {
