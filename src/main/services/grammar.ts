@@ -35,7 +35,9 @@ Tools (one per reply):
 - finish: args message — done; message is shown to the user in plain English
 Prefer relative paths. Prefer short files. Never require the user to open a code editor.
 Refuse unsafe Android signing / Play Store credential requests clearly.
-Call finish when the project exists on disk.`
+Never reply with prose. Never call finish until at least one write_file (or scaffold) has created a real file on disk.
+If asked to make a website/app/folder, you MUST use write_file / apply_template tools — claiming “done” without tools is forbidden.
+Call finish only when the project exists on disk.`
 
 const TOOL_SET = new Set<string>(GRAMMAR_TOOLS)
 

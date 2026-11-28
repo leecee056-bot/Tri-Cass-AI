@@ -1,4 +1,5 @@
 import { basename } from 'node:path'
+import { existsSync, statSync } from 'node:fs'
 import type { AgentResult, AgentStep, ChatConfig } from '../../shared/types'
 import { chatOnce } from './ollama'
 import {
@@ -10,6 +11,7 @@ import {
 import {
   detectScaffoldIntent,
   extractProjectTitle,
+  isCreateFilesIntent,
   runScaffold,
   type ScaffoldKind
 } from './templates'
@@ -21,7 +23,8 @@ import {
   resolveInWorkspace,
   runCommand,
   writeText,
-  createProjectDir
+  createProjectDir,
+  slugifyProject
 } from './workspace'
 import { knowledgeContext, searchKnowledge } from './knowledge'
 import { useTemplate, getTemplate, searchTemplates } from './templatePack'
@@ -38,7 +41,7 @@ export type AgentRunOpts = {
   config: ChatConfig
   signal?: AbortSignal
   onStep?: (step: AgentStep) => void
-  forceKind?: Exclude<ScaffoldKind, null>
+          forceKind?: Exclude<ScaffoldKind, null> | null
   selectedTemplateId?: string | null
 }
 
@@ -169,14 +172,47 @@ function howToFor(kind: Exclude<ScaffoldKind, null>): string {
   }
 }
 
+/** Keep only paths that exist on disk with size > 0. */
+export function verifyFilesOnDisk(paths: string[]): { ok: string[]; missing: string[] } {
+  const ok: string[] = []
+  const missing: string[] = []
+  for (const p of [...new Set(paths)]) {
+    try {
+      if (existsSync(p) && statSync(p).isFile() && statSync(p).size > 0) ok.push(p)
+      else missing.push(p)
+    } catch {
+      missing.push(p)
+    }
+  }
+  return { ok, missing }
+}
+
+function fileInventory(paths: string[]): string {
+  return paths
+    .map((f) => {
+      try {
+        const st = statSync(f)
+        return `- \`${f}\` (${st.size} bytes)`
+      } catch {
+        return `- \`${f}\` (missing)`
+      }
+    })
+    .join('\n')
+}
+
 /**
  * Primary coding path: template-first for website/app intents, then optional
  * model polish via Cline-slim grammar when Ollama is available.
+ * Create intents MUST write real files — finish with zero files is a hard fail.
  */
 export async function runCodingAgent(opts: AgentRunOpts): Promise<AgentResult> {
   const steps: AgentStep[] = []
   const filesCreated: string[] = []
+  const mustCreate = isCreateFilesIntent(opts.prompt) || Boolean(opts.forceKind) || Boolean(opts.selectedTemplateId)
   emit(steps, opts.onStep, 'plan', `Workspace: ${getWorkspaceRoot()}`)
+  if (mustCreate) {
+    emit(steps, opts.onStep, 'plan', 'Create intent — write-files mode forced (no prose-only done)')
+  }
 
   // Selected template → copy then optionally customise
   if (opts.selectedTemplateId) {
@@ -278,12 +314,27 @@ export async function runCodingAgent(opts: AgentRunOpts): Promise<AgentResult> {
   if (kind) {
     emit(steps, opts.onStep, 'plan', `Detected intent: create ${kind}`)
     const title = extractProjectTitle(opts.prompt, defaultTitle(kind))
+    emit(steps, opts.onStep, 'plan', `Project folder name: ${title}`)
     const scaffold = runScaffold(kind, title)
     createCheckpoint(scaffold.projectPath, 'after-scaffold')
     filesCreated.push(...scaffold.files)
     for (const f of scaffold.files) {
       emit(steps, opts.onStep, 'write', `Created ${basename(f)}`, f)
     }
+
+    const verifiedScaffold = verifyFilesOnDisk(filesCreated)
+    if (verifiedScaffold.ok.length === 0) {
+      emit(steps, opts.onStep, 'error', 'Scaffold wrote zero verifiable files')
+      return {
+        ok: false,
+        projectPath: scaffold.projectPath,
+        steps,
+        message: `Failed to create ${kind}: no files appeared on disk under \`${scaffold.projectPath}\`. Check workspace permissions.`,
+        filesCreated: []
+      }
+    }
+    filesCreated.length = 0
+    filesCreated.push(...verifiedScaffold.ok)
 
     try {
       const kb = knowledgeContext(opts.chatId, opts.prompt)
@@ -292,10 +343,11 @@ export async function runCodingAgent(opts: AgentRunOpts): Promise<AgentResult> {
         {
           role: 'user',
           content:
-            `Project already scaffolded at ${scaffold.projectPath}.\n` +
+            `Project already scaffolded at ${scaffold.projectPath} with ${verifiedScaffold.ok.length} real files.\n` +
             `User request: ${opts.prompt}\n` +
             (kb ? `\n${kb}\n` : '') +
-            `Improve the project with at most a few tool calls, then finish. Explain changes in plain English in the finish message.`
+            `Improve with grammar tool calls only (write_file/edit_file/…). ` +
+            `Never claim success without tools. Call finish only after files exist.`
         }
       ]
 
@@ -316,19 +368,35 @@ export async function runCodingAgent(opts: AgentRunOpts): Promise<AgentResult> {
           break
         }
         emit(steps, opts.onStep, 'tool', `${call.tool} ${JSON.stringify(call.args).slice(0, 180)}`)
-        const result = await execTool(call, projectName, opts.chatId)
-        emit(steps, opts.onStep, 'observe', result.text.slice(0, 500), result.path)
-        if (result.files) filesCreated.push(...result.files)
-        if (result.path && call.tool === 'write_file') filesCreated.push(result.path)
-        if (result.done) {
-          emit(steps, opts.onStep, 'done', result.message || 'Finished')
+        if (call.tool === 'finish') {
+          const verified = verifyFilesOnDisk(filesCreated)
+          if (verified.ok.length === 0) {
+            emit(steps, opts.onStep, 'error', 'finish rejected — zero files on disk')
+            messages.push({ role: 'assistant', content: reply })
+            messages.push({
+              role: 'user',
+              content: 'Observation: finish rejected. Write files with write_file first, then finish.'
+            })
+            continue
+          }
+          createCheckpoint(scaffold.projectPath, 'after-polish')
+          emit(steps, opts.onStep, 'done', call.args.message || 'Finished')
           return {
             ok: true,
             projectPath: scaffold.projectPath,
             steps,
-            message: result.message || `Created ${kind} at ${scaffold.projectPath}`,
-            filesCreated: [...new Set(filesCreated)]
+            message:
+              (call.args.message || `Created ${kind} at ${scaffold.projectPath}`) +
+              `\n\n**Files on disk**\n${fileInventory(verified.ok)}`,
+            filesCreated: verified.ok,
+            checkpointId: undefined
           }
+        }
+        const result = await execTool(call, projectName, opts.chatId)
+        emit(steps, opts.onStep, 'observe', result.text.slice(0, 500), result.path)
+        if (result.files) filesCreated.push(...result.files)
+        if (result.path && (call.tool === 'write_file' || call.tool === 'edit_file')) {
+          filesCreated.push(result.path)
         }
         messages.push({ role: 'assistant', content: reply })
         messages.push({ role: 'user', content: `Observation:\n${result.text}` })
@@ -342,16 +410,35 @@ export async function runCodingAgent(opts: AgentRunOpts): Promise<AgentResult> {
       )
     }
 
+    const verified = verifyFilesOnDisk(filesCreated)
+    if (verified.ok.length === 0) {
+      emit(steps, opts.onStep, 'error', 'Create intent failed — zero files verified')
+      return {
+        ok: false,
+        projectPath: scaffold.projectPath,
+        steps,
+        message: `Could not verify any files for **${title}**. Nothing durable was written.`,
+        filesCreated: []
+      }
+    }
+    createCheckpoint(scaffold.projectPath, 'create-complete')
     emit(steps, opts.onStep, 'done', `Created ${kind} at ${scaffold.projectPath}`)
-    const tree = [...new Set(filesCreated)]
-      .map((f) => `- \`${f.replace(scaffold.projectPath + '/', '')}\``)
+    const tree = verified.ok
+      .map((f) => {
+        const rel = f.replace(scaffold.projectPath + '/', '')
+        try {
+          return `- \`${rel}\` (${statSync(f).size} bytes)`
+        } catch {
+          return `- \`${rel}\``
+        }
+      })
       .join('\n')
     return {
       ok: true,
       projectPath: scaffold.projectPath,
       steps,
-      message: `Created **${title}** (${kind}) with ${filesCreated.length} files at \`${scaffold.projectPath}\`.\n\n**Files**\n${tree}\n\n${howToFor(kind)}\n\nYou don’t need to code — just ask for changes in plain English.`,
-      filesCreated: [...new Set(filesCreated)]
+      message: `Created **${title}** (${kind}) with ${verified.ok.length} files at \`${scaffold.projectPath}\`.\n\n**Files**\n${tree}\n\n${howToFor(kind)}\n\nYou don’t need to code — just ask for changes in plain English.`,
+      filesCreated: verified.ok
     }
   }
 
@@ -389,8 +476,36 @@ export async function runCodingAgent(opts: AgentRunOpts): Promise<AgentResult> {
     }
   }
 
-  const projectName = `task-${Date.now()}`
+  // Create intent without a typed scaffold → still force a real website folder on disk
+  if (mustCreate) {
+    emit(steps, opts.onStep, 'plan', 'Create intent without typed scaffold — forcing website scaffold')
+    const title = extractProjectTitle(opts.prompt, defaultTitle('website'))
+    const scaffold = runScaffold('website', title)
+    createCheckpoint(scaffold.projectPath, 'forced-create')
+    const verified = verifyFilesOnDisk(scaffold.files)
+    if (verified.ok.length === 0) {
+      return {
+        ok: false,
+        projectPath: scaffold.projectPath,
+        steps,
+        message: `Create intent failed: could not write files under \`${scaffold.projectPath}\`.`,
+        filesCreated: []
+      }
+    }
+    for (const f of verified.ok) emit(steps, opts.onStep, 'write', `Created ${basename(f)}`, f)
+    emit(steps, opts.onStep, 'done', `Created website at ${scaffold.projectPath}`)
+    return {
+      ok: true,
+      projectPath: scaffold.projectPath,
+      steps,
+      message: `Created **${title}** in \`${scaffold.projectPath}\` with ${verified.ok.length} real files.\n\n**Files**\n${fileInventory(verified.ok)}\n\n${howToFor('website')}`,
+      filesCreated: verified.ok
+    }
+  }
+
+  const projectName = extractProjectTitle(opts.prompt, `task-${Date.now()}`)
   const projectPath = createProjectDir(projectName)
+  createCheckpoint(projectPath, 'before-grammar')
   emit(steps, opts.onStep, 'plan', `New project folder: ${projectPath}`)
 
   const kb = knowledgeContext(opts.chatId, opts.prompt)
@@ -400,7 +515,8 @@ export async function runCodingAgent(opts: AgentRunOpts): Promise<AgentResult> {
       content:
         `Workspace project: ${projectPath}\nUser request: ${opts.prompt}\n` +
         (kb ? `\n${kb}\n` : '') +
-        `Implement with tools, then finish. Prefer plain-English finish messages. Ask if web vs Android is unclear.`
+        `Implement with grammar tools only (write_file first). ` +
+        `finish is rejected until at least one file exists on disk. Prefer plain-English finish messages.`
     }
   ]
 
@@ -412,7 +528,7 @@ export async function runCodingAgent(opts: AgentRunOpts): Promise<AgentResult> {
           projectPath,
           steps,
           message: 'Stopped.',
-          filesCreated: [...new Set(filesCreated)]
+          filesCreated: verifyFilesOnDisk(filesCreated).ok
         }
       }
       const reply = await chatOnce(messages, {
@@ -435,21 +551,32 @@ export async function runCodingAgent(opts: AgentRunOpts): Promise<AgentResult> {
         continue
       }
       emit(steps, opts.onStep, 'tool', `${call.tool}`)
-      const result = await execTool(call, projectName, opts.chatId)
-      emit(steps, opts.onStep, 'observe', result.text.slice(0, 500), result.path)
-      if (result.files) filesCreated.push(...result.files)
-      if (result.path && (call.tool === 'write_file' || call.tool === 'edit_file')) {
-        filesCreated.push(result.path)
-      }
-      if (result.done) {
-        emit(steps, opts.onStep, 'done', result.message || 'Done')
+      if (call.tool === 'finish') {
+        const verified = verifyFilesOnDisk(filesCreated)
+        if (verified.ok.length === 0) {
+          emit(steps, opts.onStep, 'error', 'finish rejected — zero files on disk')
+          messages.push({ role: 'assistant', content: reply })
+          messages.push({
+            role: 'user',
+            content: 'Observation: finish rejected. Use write_file to create real files, then finish.'
+          })
+          continue
+        }
+        createCheckpoint(projectPath, 'grammar-complete')
+        emit(steps, opts.onStep, 'done', call.args.message || 'Done')
         return {
           ok: true,
           projectPath,
           steps,
-          message: result.message || 'Done.',
-          filesCreated: [...new Set(filesCreated)]
+          message: `${call.args.message || 'Done.'}\n\n**Files on disk**\n${fileInventory(verified.ok)}`,
+          filesCreated: verified.ok
         }
+      }
+      const result = await execTool(call, slugifyProject(projectName), opts.chatId)
+      emit(steps, opts.onStep, 'observe', result.text.slice(0, 500), result.path)
+      if (result.files) filesCreated.push(...result.files)
+      if (result.path && (call.tool === 'write_file' || call.tool === 'edit_file')) {
+        filesCreated.push(result.path)
       }
       messages.push({ role: 'assistant', content: reply })
       messages.push({ role: 'user', content: `Observation:\n${result.text}` })
@@ -462,23 +589,25 @@ export async function runCodingAgent(opts: AgentRunOpts): Promise<AgentResult> {
       projectPath,
       steps,
       message: `Agent error: ${msg}`,
-      filesCreated: [...new Set(filesCreated)]
+      filesCreated: verifyFilesOnDisk(filesCreated).ok
     }
   }
 
+  const verified = verifyFilesOnDisk(filesCreated)
   return {
-    ok: filesCreated.length > 0,
+    ok: verified.ok.length > 0,
     projectPath,
     steps,
-    message: filesCreated.length
-      ? `Reached step limit. Files are in ${projectPath}`
+    message: verified.ok.length
+      ? `Reached step limit. Files are in ${projectPath}\n\n${fileInventory(verified.ok)}`
       : 'Agent stopped without creating files. Try “make a website”, “make an Android notes app”, or download Templates.',
-    filesCreated: [...new Set(filesCreated)]
+    filesCreated: verified.ok
   }
 }
 
 export function wantsCodingAgent(prompt: string): boolean {
   return (
+    isCreateFilesIntent(prompt) ||
     detectScaffoldIntent(prompt) !== null ||
     /\b(create|write|scaffold|implement)\b.{0,30}\b(file|folder|project)\b/i.test(prompt) ||
     /\b(template|android|electron|ascii|generate an? image)\b/i.test(prompt) ||

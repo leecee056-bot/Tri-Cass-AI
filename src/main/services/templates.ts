@@ -36,16 +36,26 @@ export function detectScaffoldIntent(prompt: string): ScaffoldKind {
   ) {
     return 'game'
   }
+  // "make me a website…", "create a site in a folder", etc.
   if (
-    /\b(make|create|build|scaffold|generate)\b.{0,40}\b(web\s*site|website|landing\s*page|webpage)\b/.test(
+    /\b(make|create|build|scaffold|generate|spin\s*up|set\s*up)\b[\s\S]{0,60}\b(web\s*site|website|landing\s*page|webpage|site)\b/.test(
       p
     ) ||
-    /\b(website|landing page|restaurant\s+site)\b/.test(p)
+    /\b(website|landing page|restaurant\s+site)\b/.test(p) ||
+    /\b(make|create)\b[\s\S]{0,40}\b(in\s+a\s+folder|into\s+a\s+folder|as\s+a\s+folder)\b/.test(p)
   ) {
-    return 'website'
+    // Prefer website when "site/website" present; bare "folder" create with site words → website
+    if (/\b(app|application|node|cli)\b/.test(p) && !/\b(web\s*site|website|site|page)\b/.test(p)) {
+      return 'app'
+    }
+    if (/\b(web\s*site|website|landing\s*page|webpage|site|page)\b/.test(p) || /\bfolder\b/.test(p)) {
+      return 'website'
+    }
   }
   if (
-    /\b(make|create|build|scaffold|generate)\b.{0,40}\b(app|application|node\s*app|cli)\b/.test(p) ||
+    /\b(make|create|build|scaffold|generate)\b[\s\S]{0,60}\b(app|application|node\s*app|cli)\b/.test(
+      p
+    ) ||
     /\b(make that an? app|turn (it|that) into an? app)\b/.test(p)
   ) {
     return 'app'
@@ -53,11 +63,32 @@ export function detectScaffoldIntent(prompt: string): ScaffoldKind {
   return null
 }
 
-export function extractProjectTitle(prompt: string, fallback: string): string {
-  const named = prompt.match(
-    /(?:called|named|titled|for)\s+["']?([A-Za-z0-9][\w\s-]{1,48})["']?/i
+/** True when the user clearly wants files/folders created on disk (not chat theater). */
+export function isCreateFilesIntent(prompt: string): boolean {
+  if (detectScaffoldIntent(prompt) !== null) return true
+  const p = prompt.toLowerCase()
+  return (
+    /\b(make|create|build|scaffold|generate|write)\b[\s\S]{0,50}\b(file|files|folder|directory|project|repo)\b/.test(
+      p
+    ) ||
+    /\b(put|save)\b[\s\S]{0,30}\b(on disk|in (my )?workspace|in a folder)\b/.test(p)
   )
-  if (named?.[1]) return named[1].trim()
+}
+
+export function extractProjectTitle(prompt: string, fallback: string): string {
+  const patterns = [
+    /(?:in|into)\s+(?:a\s+)?(?:folder|directory|dir)\s+(?:called|named)\s+["']?([A-Za-z0-9][\w\s-]{1,48})["']?/i,
+    /(?:folder|directory|dir)\s+["']?([A-Za-z0-9][\w\s-]{1,48})["']?/i,
+    /(?:called|named|titled)\s+["']?([A-Za-z0-9][\w\s-]{1,48})["']?/i,
+    /\bfor\s+["']?([A-Za-z0-9][\w\s-]{1,48})["']?(?:\s+in\s+a\s+folder)?/i
+  ]
+  for (const re of patterns) {
+    const m = prompt.match(re)
+    if (m?.[1]) {
+      const t = m[1].trim().replace(/\s+in\s+a\s+folder$/i, '').trim()
+      if (t && !/^(a|an|the|my|website|site|app|folder|project)$/i.test(t)) return t
+    }
+  }
   return fallback
 }
 
