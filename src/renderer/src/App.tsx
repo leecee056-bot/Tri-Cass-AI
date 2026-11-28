@@ -9,7 +9,7 @@ import type {
   WorkspaceInfo
 } from '../../shared/types'
 import { ramBadgeLabel } from '../../shared/catalog'
-import { AboutPanel, AsciiPanel, TemplatesPanel } from './ExtraPanels'
+import { AboutPanel, AsciiPanel, ProjectRunPanel, TemplatesPanel } from './ExtraPanels'
 import { BUILTIN_TEXTURES, DEFAULT_WALLPAPER_ID } from '../../shared/textures'
 import type { WallpaperRef } from '../../shared/types'
 
@@ -70,7 +70,7 @@ type UiMessage = {
   checkpointId?: string
 }
 
-type Panel = 'chat' | 'models' | 'knowledge' | 'workspace' | 'templates' | 'ascii' | 'settings' | 'about'
+type Panel = 'chat' | 'models' | 'knowledge' | 'workspace' | 'templates' | 'ascii' | 'settings' | 'about' | 'run'
 
 const HINT_LINKS = [
   'Create a website in my workspace',
@@ -148,6 +148,7 @@ export default function App() {
   const [actPhase, setActPhase] = useState(true)
   const [useKb, setUseKb] = useState(true)
   const [lastCheckpointId, setLastCheckpointId] = useState<string | null>(null)
+  const [runProjectPath, setRunProjectPath] = useState<string | null>(null)
   const [attachments, setAttachments] = useState<string[]>([])
   const [pull, setPull] = useState<PullProgress | null>(null)
   const [toast, setToast] = useState('')
@@ -224,6 +225,7 @@ export default function App() {
         if (p.sessionId !== activeIdRef.current) return
         streamBuf.current = ''
         if (p.checkpointId) setLastCheckpointId(p.checkpointId)
+        if (p.projectPath) setRunProjectPath(p.projectPath)
         setMessages((prev) => [
           ...prev.filter((m) => m.id !== 'streaming'),
           {
@@ -599,6 +601,13 @@ export default function App() {
               <button className={`nav-item ${panel === 'workspace' ? 'active' : ''}`} type="button" onClick={() => setPanel('workspace')}>
                 Workspace
               </button>
+              <button
+                className={`nav-item ${panel === 'run' ? 'active' : ''}`}
+                type="button"
+                onClick={() => setPanel('run')}
+              >
+                Run{runProjectPath ? ' ·' : ''}
+              </button>
               <button className={`nav-item ${panel === 'templates' ? 'active' : ''}`} type="button" onClick={() => setPanel('templates')}>
                 Templates
               </button>
@@ -852,6 +861,31 @@ export default function App() {
                               }
                             >
                               Open folder
+                            </button>
+                          ) : null}
+                          {m.projectPath ? (
+                            <button
+                              className="btn"
+                              type="button"
+                              onClick={() => {
+                                setRunProjectPath(m.projectPath!)
+                                setPanel('run')
+                              }}
+                            >
+                              Run panel
+                            </button>
+                          ) : null}
+                          {m.projectPath ? (
+                            <button
+                              className="btn"
+                              type="button"
+                              onClick={() =>
+                                void window.triCass.clipboardWrite(m.projectPath!).then(() =>
+                                  flash('Copied project path')
+                                )
+                              }
+                            >
+                              Copy path
                             </button>
                           ) : null}
                           {m.checkpointId ? (
@@ -1835,6 +1869,15 @@ export default function App() {
 
           {panel === 'about' && (
             <AboutPanel version={version} onBack={() => setPanel('chat')} attribution={packAttribution} />
+          )}
+          {panel === 'run' && (
+            <ProjectRunPanel
+              projectPath={runProjectPath}
+              workspaceRoot={workspace.root}
+              onPickProject={(p) => setRunProjectPath(p)}
+              onBack={() => setPanel('chat')}
+              flash={flash}
+            />
           )}
         </section>
       </div>
