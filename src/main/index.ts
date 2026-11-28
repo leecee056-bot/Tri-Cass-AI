@@ -104,7 +104,7 @@ let splashWindow: BrowserWindow | null = null
 let tray: Tray | null = null
 const abortControllers = new Map<string, AbortController>()
 let activePullId: string | null = null
-const VERSION = '0.1.0'
+const VERSION = '0.1.3'
 
 function resolveAppIcon(): string {
   const candidates = [
