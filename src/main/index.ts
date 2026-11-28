@@ -31,6 +31,7 @@ import {
   listKnowledge,
   clearKnowledge,
   knowledgeContext,
+  knowledgeStats,
   searchKnowledge,
   reindexKnowledge,
   removeKnowledgeSources,
@@ -39,6 +40,7 @@ import {
   attachWorkspaceKnowledge,
   listWorkspaceKnowledge
 } from './services/knowledge'
+import { GRAMMAR_TOOLS } from './services/grammar'
 import {
   loadSessions,
   saveSessions,
@@ -421,10 +423,12 @@ ipcMain.handle('config:set', async (_e, config: ChatConfig) => {
   return config
 })
 
-ipcMain.handle('kb:attach', async (_e, chatId: string) => {
+ipcMain.handle('kb:attach', async (_e, chatId: string, opts?: { folderOnly?: boolean }) => {
   const res = await dialog.showOpenDialog(mainWindow!, {
-    title: 'Attach knowledge to this chat',
-    properties: ['openFile', 'openDirectory', 'multiSelections']
+    title: opts?.folderOnly ? 'Attach folder to this chat' : 'Attach knowledge to this chat',
+    properties: opts?.folderOnly
+      ? ['openDirectory', 'multiSelections']
+      : ['openFile', 'openDirectory', 'multiSelections']
   })
   if (res.canceled || !res.filePaths.length) {
     return { sources: listKnowledge(chatId), added: 0 }
@@ -441,6 +445,7 @@ ipcMain.handle('kb:attach', async (_e, chatId: string) => {
 })
 
 ipcMain.handle('kb:list', async (_e, chatId: string) => listKnowledge(chatId))
+ipcMain.handle('kb:stats', async (_e, chatId: string) => knowledgeStats(chatId))
 ipcMain.handle('kb:clear', async (_e, chatId: string) => {
   clearKnowledge(chatId)
   const session = getSession(chatId)
@@ -453,6 +458,7 @@ ipcMain.handle('kb:clear', async (_e, chatId: string) => {
 ipcMain.handle('kb:search', async (_e, chatId: string, query: string) =>
   searchKnowledge(chatId, query)
 )
+ipcMain.handle('agent:tools', async () => [...GRAMMAR_TOOLS])
 
 ipcMain.handle('clipboard:write', async (_e, text: string) => {
   clipboard.writeText(text)
@@ -546,11 +552,14 @@ ipcMain.handle(
         detectQuickBuild(content) ||
         Boolean(payload.selectedTemplateId)
       // Create intents always force the write-files agent — never prose-only chat theater
+      // Plain chat (agentMode off): never silently enter file-writing agent.
+      // Create intents still force the write-files path (Lee's disk bar).
       const coding =
         createIntent ||
         (payload.agentMode !== false && (mode === 'build' || wantsCodingAgent(content)))
+      const planOnly = mode === 'plan' && payload.agentMode !== false && !createIntent
 
-      if (coding || mode === 'plan') {
+      if (coding || planOnly) {
         send('chat:status', { sessionId, status: 'agent' })
         let result
         try {
@@ -566,7 +575,7 @@ ipcMain.handle(
               createIntent && !payload.selectedTemplateId
                 ? detectScaffoldIntent(content) || undefined
                 : undefined,
-            phase: mode === 'plan' && !createIntent ? 'plan' : 'act'
+            phase: planOnly ? 'plan' : 'act'
           })
         } catch (err) {
           const msg = err instanceof Error ? err.message : String(err)
@@ -794,9 +803,15 @@ ipcMain.handle('data:importBackup', async () => {
 })
 
 ipcMain.handle('kb:reindex', async (_e, chatId: string) => reindexKnowledge(chatId))
-ipcMain.handle('kb:remove', async (_e, chatId: string, names: string[]) =>
-  removeKnowledgeSources(chatId, names)
-)
+ipcMain.handle('kb:remove', async (_e, chatId: string, names: string[]) => {
+  const sources = removeKnowledgeSources(chatId, names)
+  const session = getSession(chatId)
+  if (session) {
+    session.kbPaths = sources
+    updateSession(session)
+  }
+  return sources
+})
 ipcMain.handle('kb:failures', async (_e, chatId: string) => knowledgeFailures(chatId))
 ipcMain.handle('kb:types', async () => kbSupportedTypes())
 ipcMain.handle('kb:workspaceAttach', async () => {

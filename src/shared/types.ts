@@ -146,6 +146,10 @@ export type ChatConfig = {
   stuckErrorLimit?: number
   /** Auto-restore baseline checkpoint when stuck (default true). */
   autoRestoreOnStuck?: boolean
+  /** When false, web search / fetch_url are disabled even if toggled elsewhere. */
+  networkToolsEnabled?: boolean
+  /** Soft char budget for KB context injection (default 6000). */
+  kbContextChars?: number
 }
 
 export type WorkspaceInfo = {

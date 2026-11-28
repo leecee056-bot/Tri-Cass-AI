@@ -47,7 +47,9 @@ export const DEFAULT_CONFIG: ChatConfig = {
   kbScope: 'chat',
   maxAgentSteps: 12,
   stuckErrorLimit: 3,
-  autoRestoreOnStuck: true
+  autoRestoreOnStuck: true,
+  networkToolsEnabled: true,
+  kbContextChars: 6000
 }
 
 function ensureDir(p: string): string {

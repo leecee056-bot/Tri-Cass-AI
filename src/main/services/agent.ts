@@ -1,5 +1,12 @@
 import { basename, join } from 'node:path'
-import { existsSync, mkdirSync, readFileSync, statSync, writeFileSync } from 'node:fs'
+import {
+  appendFileSync,
+  existsSync,
+  mkdirSync,
+  readFileSync,
+  statSync,
+  writeFileSync
+} from 'node:fs'
 import type { AgentResult, AgentStep, ChatConfig } from '../../shared/types'
 import { chatOnce } from './ollama'
 import {
@@ -172,8 +179,24 @@ async function execTool(
     switch (call.tool) {
       case 'write_file': {
         const path = resolveInWorkspace(call.args.path || 'file.txt', projectName)
-        writeText(path, call.args.content || '')
-        return { text: `wrote ${path} (${(call.args.content || '').length} bytes)`, path }
+        if (/\.(png|jpe?g|gif|webp|ico|pdf|zip|7z|exe|dll|so|dylib|mp4|mp3|wav|woff2?|ttf)$/i.test(path)) {
+          return {
+            text: `refused binary write_file for ${path} — use a text path or generate_image for PNG`,
+            error: true
+          }
+        }
+        const content = call.args.content || ''
+        // Long content: write in chunks so we never silently truncate
+        const CHUNK = 64_000
+        if (content.length <= CHUNK) {
+          writeText(path, content)
+        } else {
+          writeText(path, '')
+          for (let i = 0; i < content.length; i += CHUNK) {
+            appendFileSync(path, content.slice(i, i + CHUNK), 'utf8')
+          }
+        }
+        return { text: `wrote ${path} (${content.length} bytes)`, path }
       }
       case 'edit_file': {
         const path = resolveInWorkspace(call.args.path || '', projectName)
@@ -552,7 +575,8 @@ async function runCodingAgentInner(opts: AgentRunOpts): Promise<AgentResult> {
     }
   }
 
-  if (opts.config.webSearch && /\b(search|research|look up|fetch)\b/i.test(opts.prompt)) {
+  const networkOk = opts.config.networkToolsEnabled !== false && opts.config.webSearch
+  if (networkOk && /\b(search|research|look up|fetch)\b/i.test(opts.prompt)) {
     emit(steps, opts.onStep, 'plan', 'Web search enabled — fetching…')
     try {
       const hits = await webSearch(opts.prompt, 3)
@@ -561,12 +585,19 @@ async function runCodingAgentInner(opts: AgentRunOpts): Promise<AgentResult> {
           steps,
           opts.onStep,
           'observe',
-          h.ok ? `${h.url}: ${(h.text || '').slice(0, 200)}` : h.error || 'fail'
+          h.ok
+            ? `web: ${h.url}: ${(h.text || '').slice(0, 200)}`
+            : h.error || 'fail'
         )
+      }
+      if (hits.some((h) => h.ok)) {
+        emit(steps, opts.onStep, 'observe', 'Answer may include web results (disclosed).')
       }
     } catch (err) {
       emit(steps, opts.onStep, 'error', err instanceof Error ? err.message : String(err))
     }
+  } else if (opts.config.webSearch && opts.config.networkToolsEnabled === false) {
+    emit(steps, opts.onStep, 'observe', 'Network tools disabled in Settings — skipping web search.')
   }
 
   const kind = opts.forceKind || detectScaffoldIntent(opts.prompt)
@@ -622,7 +653,11 @@ async function runCodingAgentInner(opts: AgentRunOpts): Promise<AgentResult> {
     const stuck: StuckState = { lastError: '', count: 0 }
 
     try {
-      const kb = knowledgeContext(opts.chatId, opts.prompt)
+      const kb = knowledgeContext(
+        opts.chatId,
+        opts.prompt,
+        opts.config.kbContextChars ?? 6000
+      )
       const projectName = basename(scaffold.projectPath)
       const messages: Array<{ role: string; content: string }> = [
         {
@@ -637,7 +672,17 @@ async function runCodingAgentInner(opts: AgentRunOpts): Promise<AgentResult> {
       ]
 
       for (let i = 0; i < maxSteps; i++) {
-        if (opts.signal?.aborted) break
+        if (opts.signal?.aborted) {
+          emit(steps, opts.onStep, 'error', 'Aborted — not claiming success')
+          return {
+            ok: false,
+            projectPath: scaffold.projectPath,
+            steps,
+            message: 'Stopped.',
+            filesCreated: verifyFilesOnDisk(filesCreated).ok,
+            checkpointId: baseline.id
+          }
+        }
         const system = loadProjectRules(scaffold.projectPath, GRAMMAR_SYSTEM)
         const reply = await chatOnceResilient(messages, {
           model: opts.model,
@@ -867,7 +912,11 @@ async function runCodingAgentInner(opts: AgentRunOpts): Promise<AgentResult> {
     `Max agent steps: ${resolveMaxAgentSteps(opts.config.maxAgentSteps)} (config/env TRI_CASS_MAX_AGENT_STEPS)`
   )
 
-  const kb = knowledgeContext(opts.chatId, opts.prompt)
+  const kb = knowledgeContext(
+    opts.chatId,
+    opts.prompt,
+    opts.config.kbContextChars ?? 6000
+  )
   const planHint =
     phase === 'plan'
       ? `You are in Plan mode. Use save_plan to write .tri-cass/plan.md, then finish. Mutating tools are blocked.`
