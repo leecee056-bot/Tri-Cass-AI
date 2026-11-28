@@ -467,6 +467,10 @@ export function AboutPanel({
   onBack: () => void
   attribution: string[]
 }) {
+  const [tools, setTools] = useState<string[]>([])
+  useEffect(() => {
+    void window.triCass.agentTools().then((t) => setTools(t || []))
+  }, [])
   return (
     <div className="messages panel-page">
       <div className="messages-inner">
@@ -482,6 +486,18 @@ export function AboutPanel({
             Standalone local coding assistant. You don’t need to code — just ask. Updates ship as GitHub
             Releases (portable zip / installer).
           </p>
+          <h3>Agent tool allow-list</h3>
+          <p style={{ color: 'var(--text-muted)', fontSize: '0.85rem' }}>
+            Coding agent may only call these tools (one JSON call per step):
+          </p>
+          <ul>
+            {tools.map((t) => (
+              <li key={t}>
+                <code>{t}</code>
+              </li>
+            ))}
+            {!tools.length ? <li style={{ color: 'var(--text-muted)' }}>Loading…</li> : null}
+          </ul>
           <h3>Attribution</h3>
           <ul>
             <li>figlet.js — FIGlet fonts for ASCII text</li>
@@ -493,7 +509,7 @@ export function AboutPanel({
           </ul>
           <p style={{ color: 'var(--text-muted)', fontSize: '0.9rem' }}>
             NSFW image prompts are blocked. Android release signing / Play credentials are refused.
-            Telemetry is off.
+            Telemetry is off. Knowledge stays under local userData/kb — no silent cloud upload.
           </p>
           <button className="btn" type="button" onClick={onBack}>
             Back to chat

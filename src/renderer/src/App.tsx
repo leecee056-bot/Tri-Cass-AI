@@ -24,6 +24,41 @@ type Snapshot = {
   version: string
 }
 
+function KbGauge({ chatId }: { chatId: string | null }) {
+  const [stats, setStats] = useState<{
+    bytes: number
+    maxBytes: number
+    sources: number
+    chunks: number
+    chunkSize: number
+    chunkOverlap: number
+    storePath: string
+  } | null>(null)
+  useEffect(() => {
+    if (!chatId) {
+      setStats(null)
+      return
+    }
+    void window.triCass.kbStats(chatId).then((r) => setStats(r as typeof stats))
+  }, [chatId])
+  if (!chatId || !stats) return null
+  const pct = Math.min(100, Math.round((stats.bytes / Math.max(1, stats.maxBytes)) * 100))
+  return (
+    <div style={{ marginBottom: 12, fontSize: '0.85rem', color: 'var(--text-muted)' }}>
+      <div>
+        KB size: {(stats.bytes / 1024).toFixed(1)} KiB / {(stats.maxBytes / 1024 / 1024).toFixed(0)} MiB ·{' '}
+        {stats.sources} sources · {stats.chunks} chunks
+      </div>
+      <div className="progress" style={{ marginTop: 4 }}>
+        <i style={{ width: `${pct}%` }} />
+      </div>
+      <div style={{ marginTop: 4 }}>
+        Store: <code>{stats.storePath}</code> · chunk {stats.chunkSize}/{stats.chunkOverlap} overlap
+      </div>
+    </div>
+  )
+}
+
 type UiMessage = {
   id: string
   role: 'user' | 'assistant'
@@ -1273,18 +1308,36 @@ export default function App() {
               <div className="messages-inner">
                 <h2 style={{ fontFamily: 'var(--font-serif)', marginTop: 0 }}>Knowledge · this chat</h2>
                 <p style={{ color: 'var(--text-muted)' }}>
-                  Sources are linked to the current conversation and retrieved into prompts. Privacy: stays on this machine.
+                  Sources are linked to the current conversation and retrieved into prompts. Privacy: stays on this machine (no cloud upload).
                 </p>
                 <p style={{ color: 'var(--text-muted)', fontSize: '0.85rem' }}>
-                  Supported types: txt, md, json, code, html, csv (docx best-effort). Excludes .git / node_modules.
+                  Supported types: txt, md, json, code, html, csv (docx best-effort). Binary skipped with notice. Chunks: 900 chars · 120 overlap.
                 </p>
+                <KbGauge chatId={activeId} />
                 <div style={{ display: 'flex', gap: 8, marginBottom: 12, flexWrap: 'wrap' }}>
                   <button className="btn primary" type="button" onClick={async () => {
                     if (!activeId) return
-                    const res = await window.triCass.kbAttach(activeId) as { sources: string[]; added: number; warned?: string }
+                    const res = await window.triCass.kbAttach(activeId) as {
+                      sources: string[]
+                      added: number
+                      warned?: string
+                      skippedBinary?: string[]
+                    }
                     setSessions((prev) => prev.map((s) => s.id === activeId ? { ...s, kbPaths: res.sources } : s))
-                    flash(res.warned || `Attached ${res.added} file(s)`)
+                    const skip = res.skippedBinary?.length
+                      ? ` · skipped binary: ${res.skippedBinary.join(', ')}`
+                      : ''
+                    flash((res.warned || `Attached ${res.added} file(s)`) + skip)
                   }}>Attach files / folder</button>
+                  <button className="btn" type="button" onClick={async () => {
+                    if (!activeId) return
+                    const res = await window.triCass.kbAttach(activeId, { folderOnly: true }) as {
+                      sources: string[]
+                      added: number
+                    }
+                    setSessions((prev) => prev.map((s) => s.id === activeId ? { ...s, kbPaths: res.sources } : s))
+                    flash(`Folder attached · ${res.added} file(s)`)
+                  }}>Attach folder</button>
                   <button className="btn" type="button" onClick={async () => {
                     if (!activeId) return
                     await window.triCass.kbReindex(activeId)
@@ -1299,16 +1352,31 @@ export default function App() {
                     await window.triCass.kbClear(activeId)
                     setSessions((prev) => prev.map((s) => s.id === activeId ? { ...s, kbPaths: [] } : s))
                   }}>Clear KB</button>
-                  <button className="btn danger" type="button" onClick={async () => {
-                    if (!activeId || !activeSession?.kbPaths?.length) return
-                    if (!confirm('Bulk remove all chat sources?')) return
-                    await window.triCass.kbRemove(activeId, activeSession.kbPaths)
-                    setSessions((prev) => prev.map((s) => s.id === activeId ? { ...s, kbPaths: [] } : s))
-                  }}>Bulk remove</button>
                 </div>
                 <ul>
-                  {(activeSession?.kbPaths || []).map((p) => <li key={p}>{p}</li>)}
-                  {!activeSession?.kbPaths?.length && <li style={{ color: 'var(--text-muted)' }}>No sources yet. Add files this chat can use.</li>}
+                  {(activeSession?.kbPaths || []).map((p) => (
+                    <li key={p} style={{ display: 'flex', gap: 8, alignItems: 'center', marginBottom: 4 }}>
+                      <span style={{ flex: 1 }}>{p}</span>
+                      <button
+                        className="btn"
+                        type="button"
+                        style={{ padding: '2px 8px', fontSize: '0.8rem' }}
+                        onClick={async () => {
+                          if (!activeId) return
+                          const next = (await window.triCass.kbRemove(activeId, [p])) as string[]
+                          setSessions((prev) =>
+                            prev.map((s) => (s.id === activeId ? { ...s, kbPaths: next } : s))
+                          )
+                          flash(`Removed ${p}`)
+                        }}
+                      >
+                        Detach
+                      </button>
+                    </li>
+                  ))}
+                  {!activeSession?.kbPaths?.length && (
+                    <li style={{ color: 'var(--text-muted)' }}>No sources yet. Add files this chat can use.</li>
+                  )}
                 </ul>
                 <button className="btn" type="button" onClick={() => setPanel('chat')}>Back to chat</button>
               </div>
@@ -1612,6 +1680,22 @@ export default function App() {
                       onClick={() => void saveConfig({ ...config, webSearch: !config.webSearch })}
                     >
                       {config.webSearch ? 'On' : 'Off'}
+                    </button>
+                  </div>
+                  <div className="row-between">
+                    <span>Network tools (search / fetch)</span>
+                    <button
+                      className={`tool-toggle ${config.networkToolsEnabled !== false ? 'on' : ''}`}
+                      type="button"
+                      title="Master switch — off disables all browsing tools"
+                      onClick={() =>
+                        void saveConfig({
+                          ...config,
+                          networkToolsEnabled: config.networkToolsEnabled === false
+                        })
+                      }
+                    >
+                      {config.networkToolsEnabled === false ? 'Off' : 'On'}
                     </button>
                   </div>
                   <div className="row-between">

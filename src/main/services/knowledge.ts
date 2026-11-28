@@ -33,8 +33,38 @@ const TEXT_EXT = new Set([
   '.docx'
 ])
 
+const BINARY_EXT = new Set([
+  '.png',
+  '.jpg',
+  '.jpeg',
+  '.gif',
+  '.webp',
+  '.ico',
+  '.pdf',
+  '.zip',
+  '.7z',
+  '.exe',
+  '.dll',
+  '.so',
+  '.dylib',
+  '.mp4',
+  '.mp3',
+  '.wav',
+  '.woff',
+  '.woff2',
+  '.ttf'
+])
+
 const EXCLUDE_DIR = new Set(['.git', 'node_modules', 'dist', 'build', '.next', 'coverage', '__pycache__'])
-const MAX_CORPUS_BYTES = 40 * 1024 * 1024
+/** Soft cap for entire chat KB corpus on disk/index. */
+export const MAX_CORPUS_BYTES = 40 * 1024 * 1024
+/** Per-source size limit before skip/warn. */
+export const MAX_SOURCE_BYTES = 2 * 1024 * 1024
+/** Chunk size + overlap (AnythingLLM-style sliding window). */
+export const CHUNK_SIZE = 900
+export const CHUNK_OVERLAP = 120
+/** Default token budget for injected KB context (~4 chars/token heuristic). */
+export const DEFAULT_KB_CONTEXT_CHARS = 6000
 
 export const SUPPORTED_KB_TYPES =
   'txt, md, markdown, json, ts/tsx, js/jsx, css, html, py, yml/yaml, toml, csv (docx attempted as text; binary PDF limited)'
@@ -50,6 +80,8 @@ type KbIndex = {
   chunks: Chunk[]
   failures?: Array<{ path: string; reason: string }>
   scope?: 'chat' | 'workspace'
+  /** Documented chunking params for this index. */
+  chunking?: { size: number; overlap: number }
 }
 
 function indexPath(chatId: string): string {
@@ -62,23 +94,29 @@ function workspaceKbId(): string {
 
 function loadIndex(chatId: string): KbIndex {
   try {
-    if (!existsSync(indexPath(chatId))) return { sources: [], chunks: [], failures: [] }
+    if (!existsSync(indexPath(chatId))) {
+      return { sources: [], chunks: [], failures: [], chunking: { size: CHUNK_SIZE, overlap: CHUNK_OVERLAP } }
+    }
     return JSON.parse(readFileSync(indexPath(chatId), 'utf8')) as KbIndex
   } catch {
-    return { sources: [], chunks: [], failures: [] }
+    return { sources: [], chunks: [], failures: [], chunking: { size: CHUNK_SIZE, overlap: CHUNK_OVERLAP } }
   }
 }
 
 function saveIndex(chatId: string, index: KbIndex): void {
+  index.chunking = { size: CHUNK_SIZE, overlap: CHUNK_OVERLAP }
+  mkdirSync(kbRoot(chatId), { recursive: true })
   writeFileSync(indexPath(chatId), JSON.stringify(index, null, 2), 'utf8')
 }
 
-function chunkText(text: string, size = 900): string[] {
+/** Sliding-window chunking with overlap (documented for checklist §G). */
+export function chunkText(text: string, size = CHUNK_SIZE, overlap = CHUNK_OVERLAP): string[] {
+  if (!text) return ['']
+  const step = Math.max(1, size - overlap)
   const parts: string[] = []
-  let i = 0
-  while (i < text.length) {
+  for (let i = 0; i < text.length; i += step) {
     parts.push(text.slice(i, i + size))
-    i += size
+    if (i + size >= text.length) break
   }
   return parts.length ? parts : ['']
 }
@@ -92,7 +130,7 @@ function collectFiles(path: string, out: string[], depth = 0): void {
     return
   }
   if (st.isFile()) {
-    if (TEXT_EXT.has(extname(path).toLowerCase()) && st.size < 2_000_000) out.push(path)
+    out.push(path)
     return
   }
   if (st.isDirectory()) {
@@ -109,17 +147,26 @@ function corpusBytes(index: KbIndex): number {
 
 export type AttachProgress = { chatId: string; file: string; status: string; reason?: string }
 
+export type AttachResult = {
+  sources: string[]
+  added: number
+  failures: Array<{ path: string; reason: string }>
+  warned?: string
+  skippedBinary?: string[]
+}
+
 export function attachKnowledge(
   chatId: string,
   paths: string[],
   onProgress?: (p: AttachProgress) => void
-): { sources: string[]; added: number; failures: Array<{ path: string; reason: string }>; warned?: string } {
+): AttachResult {
   const index = loadIndex(chatId)
   index.failures = index.failures || []
   const destDir = join(kbRoot(chatId), 'files')
   mkdirSync(destDir, { recursive: true })
   let added = 0
   const failures: Array<{ path: string; reason: string }> = []
+  const skippedBinary: string[] = []
   let warned: string | undefined
 
   for (const raw of paths) {
@@ -129,16 +176,32 @@ export function attachKnowledge(
 
     for (const file of files) {
       const name = basename(file)
+      const ext = extname(file).toLowerCase()
       onProgress?.({ chatId, file: name, status: 'embedding' })
-      const dest = join(destDir, `${Date.now()}-${name}`)
+
+      if (BINARY_EXT.has(ext) || (!TEXT_EXT.has(ext) && ext !== '')) {
+        const reason = `Skipped binary/unsupported type ${ext || '(none)'}. Supported: ${SUPPORTED_KB_TYPES}`
+        skippedBinary.push(name)
+        failures.push({ path: name, reason })
+        index.failures.push({ path: name, reason })
+        onProgress?.({ chatId, file: name, status: 'failed', reason })
+        continue
+      }
+
       try {
-        if (!TEXT_EXT.has(extname(file).toLowerCase())) {
-          throw new Error(`Unsupported type ${extname(file)}. Supported: ${SUPPORTED_KB_TYPES}`)
+        const st = statSync(file)
+        if (st.size > MAX_SOURCE_BYTES) {
+          const reason = `Source exceeds ${Math.round(MAX_SOURCE_BYTES / 1024 / 1024)} MiB limit (${st.size} bytes)`
+          failures.push({ path: name, reason })
+          index.failures.push({ path: name, reason })
+          warned = warned || reason
+          onProgress?.({ chatId, file: name, status: 'failed', reason })
+          continue
         }
+        const dest = join(destDir, `${Date.now()}-${name}`)
         copyFileSync(file, dest)
         const text = readFileSync(dest, 'utf8')
-        const mtime = statSync(file).mtimeMs
-        // replace existing chunks for same source name
+        const mtime = st.mtimeMs
         index.chunks = index.chunks.filter((c) => c.source !== name)
         for (const piece of chunkText(text)) {
           index.chunks.push({ source: name, text: piece, mtime })
@@ -159,7 +222,7 @@ export function attachKnowledge(
   }
 
   saveIndex(chatId, index)
-  return { sources: index.sources, added, failures, warned }
+  return { sources: index.sources, added, failures, warned, skippedBinary }
 }
 
 export function reindexKnowledge(chatId: string): { sources: string[]; chunks: number } {
@@ -190,6 +253,20 @@ export function removeKnowledgeSources(chatId: string, names: string[]): string[
   const set = new Set(names)
   index.sources = index.sources.filter((s) => !set.has(s))
   index.chunks = index.chunks.filter((c) => !set.has(c.source))
+  // remove stored files matching source basename suffix
+  const filesDir = join(kbRoot(chatId), 'files')
+  if (existsSync(filesDir)) {
+    for (const f of readdirSync(filesDir)) {
+      const logical = f.replace(/^\d+-/, '')
+      if (set.has(logical)) {
+        try {
+          rmSync(join(filesDir, f), { force: true })
+        } catch {
+          /* ignore */
+        }
+      }
+    }
+  }
   saveIndex(chatId, index)
   return index.sources
 }
@@ -203,9 +280,34 @@ export function knowledgeFailures(chatId: string): Array<{ path: string; reason:
 }
 
 export function clearKnowledge(chatId: string): void {
-  saveIndex(chatId, { sources: [], chunks: [], failures: [] })
+  saveIndex(chatId, { sources: [], chunks: [], failures: [], chunking: { size: CHUNK_SIZE, overlap: CHUNK_OVERLAP } })
   const filesDir = join(kbRoot(chatId), 'files')
   if (existsSync(filesDir)) rmSync(filesDir, { recursive: true, force: true })
+}
+
+export type KbStats = {
+  chatId: string
+  sources: number
+  chunks: number
+  bytes: number
+  maxBytes: number
+  chunkSize: number
+  chunkOverlap: number
+  storePath: string
+}
+
+export function knowledgeStats(chatId: string): KbStats {
+  const index = loadIndex(chatId)
+  return {
+    chatId,
+    sources: index.sources.length,
+    chunks: index.chunks.length,
+    bytes: corpusBytes(index),
+    maxBytes: MAX_CORPUS_BYTES,
+    chunkSize: CHUNK_SIZE,
+    chunkOverlap: CHUNK_OVERLAP,
+    storePath: kbRoot(chatId)
+  }
 }
 
 function score(query: string, text: string): number {
@@ -220,11 +322,12 @@ function score(query: string, text: string): number {
 }
 
 export function searchKnowledge(chatId: string, query: string, limit = 4): KnowledgeHit[] {
+  if (!query.trim()) return []
   const indexes = [loadIndex(chatId)]
-  // merge workspace-scoped KB when present
   const ws = loadIndex(workspaceKbId())
   if (ws.chunks.length) indexes.push(ws)
   const chunks = indexes.flatMap((i) => i.chunks)
+  if (!chunks.length) return []
   const scored = chunks
     .map((c) => ({
       path: c.source,
@@ -236,16 +339,27 @@ export function searchKnowledge(chatId: string, query: string, limit = 4): Knowl
   return scored.slice(0, limit)
 }
 
-export function knowledgeContext(chatId: string, query: string): string {
+export function knowledgeContext(
+  chatId: string,
+  query: string,
+  maxChars = DEFAULT_KB_CONTEXT_CHARS
+): string {
   const hits = searchKnowledge(chatId, query)
   if (!hits.length) return ''
-  return (
-    'Knowledge base excerpts for this chat:\n' +
-    hits.map((h, i) => `[${i + 1}] (${h.path})\n${h.excerpt}`).join('\n\n')
-  )
+  const header = 'Knowledge base excerpts for this chat:\n'
+  let out = header
+  for (let i = 0; i < hits.length; i++) {
+    const block = `[${i + 1}] (${hits[i].path})\n${hits[i].excerpt}\n\n`
+    if (out.length + block.length > maxChars) {
+      out += `[truncated — KB context budget ${maxChars} chars]`
+      break
+    }
+    out += block
+  }
+  return out.trimEnd()
 }
 
-export function attachWorkspaceKnowledge(paths: string[]): ReturnType<typeof attachKnowledge> {
+export function attachWorkspaceKnowledge(paths: string[]): AttachResult {
   return attachKnowledge(workspaceKbId(), paths)
 }
 
@@ -255,6 +369,12 @@ export function listWorkspaceKnowledge(): string[] {
 
 export function kbSupportedTypes(): string {
   return SUPPORTED_KB_TYPES
+}
+
+/** True when store lives under userData/kb/<chatId> (local only — no cloud upload). */
+export function kbStoreIsLocal(chatId: string): boolean {
+  const root = kbRoot(chatId)
+  return root.includes(`${join('kb', chatId)}`) || root.endsWith(join('kb', chatId))
 }
 
 void userDataRoot
