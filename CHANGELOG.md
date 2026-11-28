@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.1.4
+
+Chat sessions + coherent scaffolds (HAP-148–151):
+
+- **Sessions** — New chat / New website / New app, inline rename, archive restore, auto-save, session-bound project + template
+- **Scaffolds** — coherence checks (no stub homepage, matching CSS/JS paths), polish rollback, favicon starter
+- **Templates** — Use this template copies once; AI edits that folder in place
+
 ## 0.1.3
 
 Coding-parity release for Lee test builds (HAP-139–144):
