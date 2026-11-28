@@ -15,7 +15,24 @@ async function main() {
 
   assert.equal(detectScaffoldIntent('make an Android notes app'), 'android')
   assert.equal(detectScaffoldIntent('create a website called Harbour'), 'website')
+  assert.equal(detectScaffoldIntent('make me a website in a folder'), 'website')
   assert.equal(extractProjectTitle('make a website called Harbour Notes', 'x'), 'Harbour Notes')
+  assert.equal(extractProjectTitle('make a website called HarbourCafe in a folder', 'x'), 'HarbourCafe')
+  const { isCreateFilesIntent } = await import('../src/main/services/templates')
+  assert.equal(isCreateFilesIntent('make me a website in a folder'), true)
+  const { verifyFilesOnDisk, runCodingAgent } = await import('../src/main/services/agent')
+  const { DEFAULT_CONFIG } = await import('../src/main/services/paths')
+  const created = await runCodingAgent({
+    prompt: 'make a website called UnitSite in a folder',
+    chatId: 'unit',
+    model: 'n/a',
+    config: { ...DEFAULT_CONFIG, streaming: false }
+  })
+  assert.equal(created.ok, true)
+  assert.ok(created.filesCreated.length >= 3)
+  const verified = verifyFilesOnDisk(created.filesCreated)
+  assert.equal(verified.ok.length, created.filesCreated.length)
+  assert.equal(verified.missing.length, 0)
   assert.ok(isDangerousCommand('rm -rf /'))
   assert.equal(isDangerousCommand('npm test'), false)
 

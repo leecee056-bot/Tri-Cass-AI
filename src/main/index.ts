@@ -11,11 +11,12 @@ import {
 } from 'electron'
 import { join } from 'node:path'
 import { randomUUID } from 'node:crypto'
-import { writeFileSync, readFileSync, existsSync } from 'node:fs'
+import { writeFileSync, readFileSync, existsSync, statSync } from 'node:fs'
 import { MODEL_CATALOG, DEFAULT_MODEL_TAG } from '../shared/catalog'
 import type { ChatConfig, PullProgress } from '../shared/types'
 import { ollamaStatus, chatStream, chatOnce, pullModel, historyToPayload } from './services/ollama'
-import { runCodingAgent, wantsCodingAgent } from './services/agent'
+import { runCodingAgent, wantsCodingAgent, verifyFilesOnDisk } from './services/agent'
+import { isCreateFilesIntent, detectScaffoldIntent } from './services/templates'
 import {
   getWorkspaceInfo,
   setWorkspaceRoot,
@@ -538,12 +539,15 @@ ipcMain.handle(
         return { ok: img.ok, runId, path: img.path }
       }
 
+      const createIntent =
+        isCreateFilesIntent(content) ||
+        detectScaffoldIntent(content) !== null ||
+        detectQuickBuild(content) ||
+        Boolean(payload.selectedTemplateId)
+      // Create intents always force the write-files agent — never prose-only chat theater
       const coding =
-        payload.agentMode !== false &&
-        (mode === 'build' ||
-          wantsCodingAgent(content) ||
-          detectQuickBuild(content) ||
-          Boolean(payload.selectedTemplateId))
+        createIntent ||
+        (payload.agentMode !== false && (mode === 'build' || wantsCodingAgent(content)))
 
       if (coding) {
         send('chat:status', { sessionId, status: 'agent' })
@@ -554,28 +558,55 @@ ipcMain.handle(
           config,
           signal: ac.signal,
           onStep: (step) => send('agent:step', { sessionId, step }),
-          selectedTemplateId: payload.selectedTemplateId
+          selectedTemplateId: payload.selectedTemplateId,
+          forceKind: createIntent && !payload.selectedTemplateId
+            ? detectScaffoldIntent(content) || undefined
+            : undefined
         })
+        const verified = verifyFilesOnDisk(result.filesCreated)
+        const files = verified.ok
+        const failedCreate = createIntent && files.length === 0
         const citations = useKb ? searchKnowledge(sessionId, content).map((h) => h.path) : []
-        const assistantText =
-          result.message +
-          (result.filesCreated.length
-            ? `\n\n**Files created**\n${result.filesCreated.map((f) => `- \`${f}\``).join('\n')}`
-            : '')
+        let assistantText = result.message
+        if (failedCreate) {
+          assistantText =
+            `I could not create any files on disk for that request.\n\n` +
+            `Workspace: \`${result.projectPath || 'unknown'}\`\n` +
+            `Try again with “make a website called MySite in a folder”, or check Workspace settings.\n\n` +
+            result.message
+        } else if (files.length) {
+          assistantText +=
+            `\n\n**Verified on disk**\n` +
+            files
+              .map((f) => {
+                try {
+                  return `- \`${f}\` (${statSync(f).size} bytes)`
+                } catch {
+                  return `- \`${f}\``
+                }
+              })
+              .join('\n')
+        }
         appendMessage(sessionId, 'assistant', assistantText, {
-          kind: 'files',
-          paths: result.filesCreated,
+          kind: failedCreate ? 'error' : 'files',
+          paths: files,
           citations
         })
         send('chat:done', {
           sessionId,
           content: assistantText,
           projectPath: result.projectPath,
-          files: result.filesCreated,
+          files,
           citations,
-          runId
+          runId,
+          ok: !failedCreate && result.ok
         })
-        return { ok: result.ok, runId, projectPath: result.projectPath }
+        return {
+          ok: !failedCreate && result.ok,
+          runId,
+          projectPath: result.projectPath,
+          files
+        }
       }
 
       const fresh = getSession(sessionId)
@@ -646,7 +677,11 @@ ipcMain.handle('chat:stop', async (_e, runId?: string) => {
 })
 
 function detectQuickBuild(content: string): boolean {
-  return /\bmake (that |this )?(a |an )?(website|web site|app|android|electron)\b/i.test(content)
+  return (
+    /\bmake (me )?(that |this )?(a |an )?(website|web site|site|app|android|electron)\b/i.test(
+      content
+    ) || /\b(website|app|site)\b.{0,30}\bin a folder\b/i.test(content)
+  )
 }
 
 ipcMain.handle('templates:status', async () => getPackStatus())
