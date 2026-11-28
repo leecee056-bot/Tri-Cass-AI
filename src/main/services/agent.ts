@@ -4,10 +4,12 @@ import type { AgentResult, AgentStep, ChatConfig } from '../../shared/types'
 import { chatOnce } from './ollama'
 import {
   GRAMMAR_SYSTEM,
-  MAX_GRAMMAR_STEPS,
-  parseGrammarCall,
+  STUCK_ERROR_LIMIT,
+  parseGrammarReply,
+  resolveMaxAgentSteps,
   type GrammarCall
 } from './grammar'
+import { applyUnifiedDiff } from './applyDiff'
 import {
   detectScaffoldIntent,
   extractProjectTitle,
@@ -30,7 +32,7 @@ import { knowledgeContext, searchKnowledge } from './knowledge'
 import { useTemplate, getTemplate, searchTemplates } from './templatePack'
 import { generateLocalImage } from './imageGen'
 import { textToAscii, imageToAscii, saveAscii } from './asciiArt'
-import { createCheckpoint } from './checkpoints'
+import { createCheckpoint, rollbackCheckpoint } from './checkpoints'
 import { webSearch, fetchUrl } from './webFetch'
 import { isDangerousCommand } from './workspace'
 
@@ -58,84 +60,173 @@ function emit(
   return step
 }
 
+const OBSERVE_CAP = 1200
+
+function truncateObs(text: string, cap = OBSERVE_CAP): string {
+  if (text.length <= cap) return text
+  return text.slice(0, cap) + `\n…(truncated ${text.length - cap} chars)`
+}
+
+function formatObservation(tool: string, text: string, path?: string): string {
+  const head = path ? `[${tool}] ${path}` : `[${tool}]`
+  return truncateObs(`${head}\n${text}`)
+}
+
 async function execTool(
   call: GrammarCall,
   projectName: string,
   chatId: string
-): Promise<{ text: string; path?: string; done?: boolean; message?: string; files?: string[] }> {
+): Promise<{
+  text: string
+  path?: string
+  done?: boolean
+  message?: string
+  files?: string[]
+  error?: boolean
+}> {
   const projectRoot = resolveInWorkspace('.', projectName)
 
-  switch (call.tool) {
-    case 'write_file': {
-      const path = resolveInWorkspace(call.args.path || 'file.txt', projectName)
-      writeText(path, call.args.content || '')
-      return { text: `wrote ${path} (${(call.args.content || '').length} bytes)`, path }
-    }
-    case 'edit_file': {
-      const path = resolveInWorkspace(call.args.path || '', projectName)
-      const msg = editText(path, call.args.old || '', call.args.new || '')
-      return { text: msg, path }
-    }
-    case 'read_file': {
-      const path = resolveInWorkspace(call.args.path || '', projectName)
-      return { text: readText(path), path }
-    }
-    case 'list_dir': {
-      const path = resolveInWorkspace(call.args.path || '.', projectName)
-      return { text: listDir(path) || '(empty)', path }
-    }
-    case 'run': {
-      const cmd = call.args.command || 'echo ok'
-      if (isDangerousCommand(cmd)) {
-        return { text: `blocked dangerous command: ${cmd}` }
+  try {
+    switch (call.tool) {
+      case 'write_file': {
+        const path = resolveInWorkspace(call.args.path || 'file.txt', projectName)
+        writeText(path, call.args.content || '')
+        return { text: `wrote ${path} (${(call.args.content || '').length} bytes)`, path }
       }
-      const out = await runCommand(projectRoot, cmd, 60_000, {
-        autoApprove: true,
-        onChunk: undefined
-      })
-      return { text: `[cwd ${projectRoot}]\n${out}` }
-    }
-    case 'search_knowledge': {
-      const hits = searchKnowledge(chatId, call.args.query || '')
-      return {
-        text: hits.length
-          ? hits.map((h) => `${h.path}: ${h.excerpt}`).join('\n---\n')
-          : '(no knowledge hits)'
+      case 'edit_file': {
+        const path = resolveInWorkspace(call.args.path || '', projectName)
+        const replaceAll = /^(1|true|yes)$/i.test(call.args.replaceAll || '')
+        const msg = editText(path, call.args.old || '', call.args.new || '', { replaceAll })
+        return { text: msg, path }
       }
-    }
-    case 'apply_template': {
-      const id = call.args.id || call.args.templateId || ''
-      const name = call.args.name || call.args.project || undefined
-      const result = useTemplate(id, name)
-      if (!result.ok) return { text: result.error || 'template failed' }
-      return {
-        text: `Applied template ${result.template?.name} → ${result.projectPath}`,
-        path: result.projectPath,
-        files: result.files
+      case 'apply_diff': {
+        const result = applyUnifiedDiff(
+          projectRoot,
+          (rel) => resolveInWorkspace(rel, projectName),
+          call.args.diff || call.args.patch || ''
+        )
+        return {
+          text: result.text,
+          path: result.paths[0],
+          files: result.paths,
+          error: !result.ok
+        }
       }
-    }
-    case 'generate_image': {
-      const result = generateLocalImage(call.args.prompt || 'Tri Cass', (call.args.size as '512' | '768' | '1024') || '512')
-      if (!result.ok) return { text: result.error || 'image failed' }
-      return { text: `Generated image ${result.path}`, path: result.path, files: result.path ? [result.path] : [] }
-    }
-    case 'generate_ascii': {
-      if (call.args.image) {
-        const result = imageToAscii(call.args.image)
-        if (!result.ok) return { text: result.error || 'ascii failed' }
+      case 'read_file': {
+        const path = resolveInWorkspace(call.args.path || '', projectName)
+        return { text: readText(path), path }
+      }
+      case 'list_dir': {
+        const path = resolveInWorkspace(call.args.path || '.', projectName)
+        return { text: listDir(path) || '(empty)', path }
+      }
+      case 'run': {
+        const cmd = call.args.command || 'echo ok'
+        if (isDangerousCommand(cmd)) {
+          return { text: `blocked dangerous command: ${cmd}`, error: true }
+        }
+        const out = await runCommand(projectRoot, cmd, 60_000, {
+          autoApprove: true,
+          onChunk: undefined
+        })
+        return { text: `[cwd ${projectRoot}]\n${out}` }
+      }
+      case 'search_knowledge': {
+        const hits = searchKnowledge(chatId, call.args.query || '')
+        return {
+          text: hits.length
+            ? hits.map((h) => `${h.path}: ${h.excerpt}`).join('\n---\n')
+            : '(no knowledge hits)'
+        }
+      }
+      case 'apply_template': {
+        const id = call.args.id || call.args.templateId || ''
+        const name = call.args.name || call.args.project || undefined
+        const result = useTemplate(id, name)
+        if (!result.ok) return { text: result.error || 'template failed', error: true }
+        return {
+          text: `Applied template ${result.template?.name} → ${result.projectPath}`,
+          path: result.projectPath,
+          files: result.files
+        }
+      }
+      case 'generate_image': {
+        const result = generateLocalImage(
+          call.args.prompt || 'Tri Cass',
+          (call.args.size as '512' | '768' | '1024') || '512'
+        )
+        if (!result.ok) return { text: result.error || 'image failed', error: true }
+        return {
+          text: `Generated image ${result.path}`,
+          path: result.path,
+          files: result.path ? [result.path] : []
+        }
+      }
+      case 'generate_ascii': {
+        if (call.args.image) {
+          const result = imageToAscii(call.args.image)
+          if (!result.ok) return { text: result.error || 'ascii failed', error: true }
+          const saved = saveAscii(result.ascii, call.args.name || 'ascii')
+          return {
+            text: result.ascii.slice(0, 2000),
+            path: saved.path,
+            files: saved.path ? [saved.path] : []
+          }
+        }
+        const result = textToAscii(
+          call.args.text || call.args.prompt || 'Tri Cass',
+          call.args.font || 'Standard'
+        )
+        if (!result.ok) return { text: result.error || 'ascii failed', error: true }
         const saved = saveAscii(result.ascii, call.args.name || 'ascii')
-        return { text: result.ascii.slice(0, 2000), path: saved.path, files: saved.path ? [saved.path] : [] }
+        return {
+          text: '```\n' + result.ascii + '\n```',
+          path: saved.path,
+          files: saved.path ? [saved.path] : []
+        }
       }
-      const result = textToAscii(call.args.text || call.args.prompt || 'Tri Cass', call.args.font || 'Standard')
-      if (!result.ok) return { text: result.error || 'ascii failed' }
-      const saved = saveAscii(result.ascii, call.args.name || 'ascii')
-      return { text: '```\n' + result.ascii + '\n```', path: saved.path, files: saved.path ? [saved.path] : [] }
+      case 'restore_checkpoint': {
+        const id = call.args.id || ''
+        const result = rollbackCheckpoint(id)
+        if (!result.ok) return { text: result.error || 'restore failed', error: true }
+        return {
+          text: `Restored checkpoint ${id} → ${result.projectPath}`,
+          path: result.projectPath
+        }
+      }
+      case 'finish':
+        return { text: call.args.message || 'Done.', done: true, message: call.args.message || 'Done.' }
+      default:
+        return { text: `unknown tool: ${(call as GrammarCall).tool}`, error: true }
     }
-    case 'finish':
-      return { text: call.args.message || 'Done.', done: true, message: call.args.message || 'Done.' }
-    default:
-      return { text: `unknown tool` }
+  } catch (err) {
+    return {
+      text: err instanceof Error ? err.message : String(err),
+      error: true
+    }
   }
+}
+
+export type StuckState = {
+  lastError: string
+  count: number
+}
+
+/** Track identical error observations; returns true when limit reached. */
+export function noteStuck(state: StuckState, errorText: string, limit: number): boolean {
+  const key = errorText.slice(0, 240)
+  if (key && key === state.lastError) {
+    state.count += 1
+  } else {
+    state.lastError = key
+    state.count = 1
+  }
+  return state.count >= limit
+}
+
+export function clearStuck(state: StuckState): void {
+  state.lastError = ''
+  state.count = 0
 }
 
 function defaultTitle(kind: Exclude<ScaffoldKind, null>): string {
@@ -220,6 +311,51 @@ function fileInventory(paths: string[]): string {
       }
     })
     .join('\n')
+}
+
+function stuckStop(args: {
+  steps: AgentStep[]
+  opts: AgentRunOpts
+  projectPath: string
+  filesCreated: string[]
+  baselineId: string
+  autoRestore: boolean
+  stuckLimit: number
+}): AgentResult {
+  const { steps, opts, projectPath, filesCreated, baselineId, autoRestore, stuckLimit } = args
+  emit(
+    steps,
+    opts.onStep,
+    'error',
+    `Stuck: identical error ×${stuckLimit} — stopping agent loop`
+  )
+  let restored = false
+  if (autoRestore && baselineId) {
+    const rb = rollbackCheckpoint(baselineId)
+    restored = Boolean(rb.ok)
+    emit(
+      steps,
+      opts.onStep,
+      restored ? 'observe' : 'error',
+      restored
+        ? `Restored baseline checkpoint ${baselineId}`
+        : `Could not restore checkpoint: ${rb.error || 'unknown'}`
+    )
+  }
+  const verified = verifyFilesOnDisk(filesCreated)
+  return {
+    ok: false,
+    projectPath,
+    steps,
+    message:
+      `Stopped after ${stuckLimit} identical errors (stuck detection).` +
+      (restored
+        ? `\nRestored baseline checkpoint \`${baselineId}\`.`
+        : `\nBaseline checkpoint \`${baselineId}\` is available — ask to restore it or use Undo.`) +
+      (verified.ok.length ? `\n\n**Files still on disk**\n${fileInventory(verified.ok)}` : ''),
+    filesCreated: verified.ok,
+    checkpointId: baselineId
+  }
 }
 
 /**
@@ -338,7 +474,7 @@ export async function runCodingAgent(opts: AgentRunOpts): Promise<AgentResult> {
     const title = extractProjectTitle(opts.prompt, defaultTitle(kind))
     emit(steps, opts.onStep, 'plan', `Project folder name: ${title}`)
     const scaffold = runScaffold(kind, title)
-    createCheckpoint(scaffold.projectPath, 'after-scaffold')
+    const baseline = createCheckpoint(scaffold.projectPath, 'after-scaffold')
     filesCreated.push(...scaffold.files)
     for (const f of scaffold.files) {
       emit(steps, opts.onStep, 'write', `Created ${basename(f)}`, f)
@@ -353,11 +489,17 @@ export async function runCodingAgent(opts: AgentRunOpts): Promise<AgentResult> {
         projectPath: scaffold.projectPath,
         steps,
         message: `Failed to create ${kind}: no files appeared on disk under \`${scaffold.projectPath}\`. Check workspace permissions.`,
-        filesCreated: []
+        filesCreated: [],
+        checkpointId: baseline.id
       }
     }
     filesCreated.length = 0
     filesCreated.push(...verifiedScaffold.ok)
+
+    const maxSteps = Math.min(4, resolveMaxAgentSteps(opts.config.maxAgentSteps))
+    const stuckLimit = opts.config.stuckErrorLimit ?? STUCK_ERROR_LIMIT
+    const autoRestore = opts.config.autoRestoreOnStuck !== false
+    const stuck: StuckState = { lastError: '', count: 0 }
 
     try {
       const kb = knowledgeContext(opts.chatId, opts.prompt)
@@ -369,12 +511,12 @@ export async function runCodingAgent(opts: AgentRunOpts): Promise<AgentResult> {
             `Project already scaffolded at ${scaffold.projectPath} with ${verifiedScaffold.ok.length} real files.\n` +
             `User request: ${opts.prompt}\n` +
             (kb ? `\n${kb}\n` : '') +
-            `Improve with grammar tool calls only (write_file/edit_file/…). ` +
+            `Improve with grammar tool calls only (write_file/edit_file/apply_diff/…). ` +
             `Never claim success without tools. Call finish only after files exist.`
         }
       ]
 
-      for (let i = 0; i < Math.min(4, MAX_GRAMMAR_STEPS); i++) {
+      for (let i = 0; i < maxSteps; i++) {
         if (opts.signal?.aborted) break
         const reply = await chatOnce(messages, {
           model: opts.model,
@@ -385,21 +527,54 @@ export async function runCodingAgent(opts: AgentRunOpts): Promise<AgentResult> {
           format: 'json',
           signal: opts.signal
         })
-        const call = parseGrammarCall(reply)
-        if (!call) {
-          emit(steps, opts.onStep, 'observe', 'Model reply was not valid tool JSON — keeping scaffold.')
-          break
+        const parsed = parseGrammarReply(reply)
+        if (parsed.kind !== 'call') {
+          const obs =
+            parsed.kind === 'unknown_tool'
+              ? `unknown tool "${parsed.tool}" — use one of the allowed tools`
+              : parsed.kind === 'missing_args'
+                ? `missing args for ${parsed.tool}: ${parsed.missing.join(', ')}`
+                : `invalid tool JSON (${parsed.reason}) — keeping scaffold`
+          emit(steps, opts.onStep, 'observe', formatObservation('parse', obs))
+          messages.push({ role: 'assistant', content: reply })
+          messages.push({ role: 'user', content: `Observation:\n${obs}` })
+          if (parsed.kind === 'invalid') break
+          if (noteStuck(stuck, obs, stuckLimit)) {
+            return stuckStop({
+              steps,
+              opts,
+              projectPath: scaffold.projectPath,
+              filesCreated,
+              baselineId: baseline.id,
+              autoRestore,
+              stuckLimit
+            })
+          }
+          continue
         }
+        const call = parsed.call
         emit(steps, opts.onStep, 'tool', `${call.tool} ${JSON.stringify(call.args).slice(0, 180)}`)
         if (call.tool === 'finish') {
           const verified = verifyFilesOnDisk(filesCreated)
           if (verified.ok.length === 0) {
-            emit(steps, opts.onStep, 'error', 'finish rejected — zero files on disk')
+            const errObs = 'finish rejected — zero files on disk'
+            emit(steps, opts.onStep, 'error', errObs)
             messages.push({ role: 'assistant', content: reply })
             messages.push({
               role: 'user',
               content: 'Observation: finish rejected. Write files with write_file first, then finish.'
             })
+            if (noteStuck(stuck, errObs, stuckLimit)) {
+              return stuckStop({
+                steps,
+                opts,
+                projectPath: scaffold.projectPath,
+                filesCreated,
+                baselineId: baseline.id,
+                autoRestore,
+                stuckLimit
+              })
+            }
             continue
           }
           createCheckpoint(scaffold.projectPath, 'after-polish')
@@ -412,25 +587,47 @@ export async function runCodingAgent(opts: AgentRunOpts): Promise<AgentResult> {
               (call.args.message || `Created ${kind} at ${scaffold.projectPath}`) +
               `\n\n**Files on disk**\n${fileInventory(verified.ok)}`,
             filesCreated: verified.ok,
-            checkpointId: undefined
+            checkpointId: baseline.id
           }
         }
         const result = await execTool(call, projectName, opts.chatId)
-        emit(steps, opts.onStep, 'observe', result.text.slice(0, 500), result.path)
+        const obs = formatObservation(call.tool, result.text, result.path)
+        emit(steps, opts.onStep, result.error ? 'error' : 'observe', obs, result.path)
         if (result.files) filesCreated.push(...result.files)
-        if (result.path && (call.tool === 'write_file' || call.tool === 'edit_file')) {
+        if (
+          result.path &&
+          (call.tool === 'write_file' || call.tool === 'edit_file' || call.tool === 'apply_diff')
+        ) {
           filesCreated.push(result.path)
-          const check = postWriteCheck(result.path)
-          emit(steps, opts.onStep, 'observe', check, result.path)
-          messages.push({ role: 'assistant', content: reply })
-          messages.push({
-            role: 'user',
-            content: `Observation:\n${result.text}\nPost-write check: ${check}`
-          })
-          continue
+          if (!result.error) {
+            const check = postWriteCheck(result.path)
+            emit(steps, opts.onStep, 'observe', check, result.path)
+            messages.push({ role: 'assistant', content: reply })
+            messages.push({
+              role: 'user',
+              content: `Observation:\n${obs}\nPost-write check: ${check}`
+            })
+            clearStuck(stuck)
+            continue
+          }
         }
         messages.push({ role: 'assistant', content: reply })
-        messages.push({ role: 'user', content: `Observation:\n${result.text}` })
+        messages.push({ role: 'user', content: `Observation:\n${obs}` })
+        if (result.error) {
+          if (noteStuck(stuck, result.text, stuckLimit)) {
+            return stuckStop({
+              steps,
+              opts,
+              projectPath: scaffold.projectPath,
+              filesCreated,
+              baselineId: baseline.id,
+              autoRestore,
+              stuckLimit
+            })
+          }
+        } else {
+          clearStuck(stuck)
+        }
       }
     } catch (err) {
       emit(
@@ -449,7 +646,8 @@ export async function runCodingAgent(opts: AgentRunOpts): Promise<AgentResult> {
         projectPath: scaffold.projectPath,
         steps,
         message: `Could not verify any files for **${title}**. Nothing durable was written.`,
-        filesCreated: []
+        filesCreated: [],
+        checkpointId: baseline.id
       }
     }
     createCheckpoint(scaffold.projectPath, 'create-complete')
@@ -469,7 +667,8 @@ export async function runCodingAgent(opts: AgentRunOpts): Promise<AgentResult> {
       projectPath: scaffold.projectPath,
       steps,
       message: `Created **${title}** (${kind}) with ${verified.ok.length} files at \`${scaffold.projectPath}\`.\n\n**Files**\n${tree}\n\n${howToFor(kind)}\n\nYou don’t need to code — just ask for changes in plain English.`,
-      filesCreated: verified.ok
+      filesCreated: verified.ok,
+      checkpointId: baseline.id
     }
   }
 
@@ -536,8 +735,14 @@ export async function runCodingAgent(opts: AgentRunOpts): Promise<AgentResult> {
 
   const projectName = extractProjectTitle(opts.prompt, `task-${Date.now()}`)
   const projectPath = createProjectDir(projectName)
-  createCheckpoint(projectPath, 'before-grammar')
+  const baseline = createCheckpoint(projectPath, 'before-grammar')
   emit(steps, opts.onStep, 'plan', `New project folder: ${projectPath}`)
+  emit(
+    steps,
+    opts.onStep,
+    'plan',
+    `Max agent steps: ${resolveMaxAgentSteps(opts.config.maxAgentSteps)} (config/env TRI_CASS_MAX_AGENT_STEPS)`
+  )
 
   const kb = knowledgeContext(opts.chatId, opts.prompt)
   const messages: Array<{ role: string; content: string }> = [
@@ -546,20 +751,27 @@ export async function runCodingAgent(opts: AgentRunOpts): Promise<AgentResult> {
       content:
         `Workspace project: ${projectPath}\nUser request: ${opts.prompt}\n` +
         (kb ? `\n${kb}\n` : '') +
-        `Implement with grammar tools only (write_file first). ` +
+        `Implement with grammar tools only (write_file / apply_diff first). ` +
         `finish is rejected until at least one file exists on disk. Prefer plain-English finish messages.`
     }
   ]
 
+  const maxSteps = resolveMaxAgentSteps(opts.config.maxAgentSteps)
+  const stuckLimit = opts.config.stuckErrorLimit ?? STUCK_ERROR_LIMIT
+  const autoRestore = opts.config.autoRestoreOnStuck !== false
+  const stuck: StuckState = { lastError: '', count: 0 }
+  const slug = slugifyProject(projectName)
+
   try {
-    for (let i = 0; i < MAX_GRAMMAR_STEPS; i++) {
+    for (let i = 0; i < maxSteps; i++) {
       if (opts.signal?.aborted) {
         return {
           ok: false,
           projectPath,
           steps,
           message: 'Stopped.',
-          filesCreated: verifyFilesOnDisk(filesCreated).ok
+          filesCreated: verifyFilesOnDisk(filesCreated).ok,
+          checkpointId: baseline.id
         }
       }
       const reply = await chatOnce(messages, {
@@ -571,26 +783,56 @@ export async function runCodingAgent(opts: AgentRunOpts): Promise<AgentResult> {
         format: 'json',
         signal: opts.signal
       })
-      const call = parseGrammarCall(reply)
-      if (!call) {
-        emit(steps, opts.onStep, 'error', 'Invalid tool JSON from model')
+      const parsed = parseGrammarReply(reply)
+      if (parsed.kind !== 'call') {
+        const obs =
+          parsed.kind === 'unknown_tool'
+            ? `unknown tool "${parsed.tool}" — allowed tools only`
+            : parsed.kind === 'missing_args'
+              ? `missing args for ${parsed.tool}: ${parsed.missing.join(', ')}`
+              : `invalid tool JSON (${parsed.reason})`
+        emit(steps, opts.onStep, 'error', formatObservation('parse', obs))
         messages.push({ role: 'assistant', content: reply })
         messages.push({
           role: 'user',
-          content: 'Reply with ONE JSON tool object only.'
+          content: `Observation:\n${obs}\nReply with ONE JSON tool object only.`
         })
+        if (noteStuck(stuck, obs, stuckLimit)) {
+          return stuckStop({
+            steps,
+            opts,
+            projectPath,
+            filesCreated,
+            baselineId: baseline.id,
+            autoRestore,
+            stuckLimit
+          })
+        }
         continue
       }
+      const call = parsed.call
       emit(steps, opts.onStep, 'tool', `${call.tool}`)
       if (call.tool === 'finish') {
         const verified = verifyFilesOnDisk(filesCreated)
         if (verified.ok.length === 0) {
-          emit(steps, opts.onStep, 'error', 'finish rejected — zero files on disk')
+          const errObs = 'finish rejected — zero files on disk'
+          emit(steps, opts.onStep, 'error', errObs)
           messages.push({ role: 'assistant', content: reply })
           messages.push({
             role: 'user',
             content: 'Observation: finish rejected. Use write_file to create real files, then finish.'
           })
+          if (noteStuck(stuck, errObs, stuckLimit)) {
+            return stuckStop({
+              steps,
+              opts,
+              projectPath,
+              filesCreated,
+              baselineId: baseline.id,
+              autoRestore,
+              stuckLimit
+            })
+          }
           continue
         }
         createCheckpoint(projectPath, 'grammar-complete')
@@ -600,27 +842,56 @@ export async function runCodingAgent(opts: AgentRunOpts): Promise<AgentResult> {
           projectPath,
           steps,
           message: `${call.args.message || 'Done.'}\n\n**Files on disk**\n${fileInventory(verified.ok)}`,
-          filesCreated: verified.ok
+          filesCreated: verified.ok,
+          checkpointId: baseline.id
         }
       }
-      const result = await execTool(call, slugifyProject(projectName), opts.chatId)
-      emit(steps, opts.onStep, 'observe', result.text.slice(0, 500), result.path)
+      const result = await execTool(call, slug, opts.chatId)
+      const obs = formatObservation(call.tool, result.text, result.path)
+      emit(steps, opts.onStep, result.error ? 'error' : 'observe', obs, result.path)
       if (result.files) filesCreated.push(...result.files)
-      if (result.path && (call.tool === 'write_file' || call.tool === 'edit_file')) {
+      if (
+        result.path &&
+        (call.tool === 'write_file' || call.tool === 'edit_file' || call.tool === 'apply_diff')
+      ) {
         filesCreated.push(result.path)
+        if (!result.error) {
+          const check = postWriteCheck(result.path)
+          emit(steps, opts.onStep, 'observe', check, result.path)
+        }
       }
       messages.push({ role: 'assistant', content: reply })
-      messages.push({ role: 'user', content: `Observation:\n${result.text}` })
+      messages.push({ role: 'user', content: `Observation:\n${obs}` })
+      if (result.error) {
+        if (noteStuck(stuck, result.text, stuckLimit)) {
+          return stuckStop({
+            steps,
+            opts,
+            projectPath,
+            filesCreated,
+            baselineId: baseline.id,
+            autoRestore,
+            stuckLimit
+          })
+        }
+      } else {
+        clearStuck(stuck)
+      }
     }
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err)
     emit(steps, opts.onStep, 'error', msg)
+    if (autoRestore) {
+      const rb = rollbackCheckpoint(baseline.id)
+      if (rb.ok) emit(steps, opts.onStep, 'observe', `Restored baseline ${baseline.id} after error`)
+    }
     return {
       ok: false,
       projectPath,
       steps,
       message: `Agent error: ${msg}`,
-      filesCreated: verifyFilesOnDisk(filesCreated).ok
+      filesCreated: verifyFilesOnDisk(filesCreated).ok,
+      checkpointId: baseline.id
     }
   }
 
@@ -632,7 +903,8 @@ export async function runCodingAgent(opts: AgentRunOpts): Promise<AgentResult> {
     message: verified.ok.length
       ? `Reached step limit. Files are in ${projectPath}\n\n${fileInventory(verified.ok)}`
       : 'Agent stopped without creating files. Try “make a website”, “make an Android notes app”, or download Templates.',
-    filesCreated: verified.ok
+    filesCreated: verified.ok,
+    checkpointId: baseline.id
   }
 }
 

@@ -149,12 +149,27 @@ export function writeText(path: string, content: string): void {
   writeFileSync(path, content, 'utf8')
 }
 
-export function editText(path: string, oldStr: string, newStr: string): string {
+export function editText(
+  path: string,
+  oldStr: string,
+  newStr: string,
+  opts?: { replaceAll?: boolean }
+): string {
   if (!existsSync(path)) throw new Error(`Missing file: ${path}`)
+  if (!oldStr) throw new Error('edit_file: old string is required')
   const body = readFileSync(path, 'utf8')
   if (!body.includes(oldStr)) throw new Error('edit_file: old string not found')
-  writeFileSync(path, body.replace(oldStr, newStr), 'utf8')
-  return `edited ${path}`
+  const count = body.split(oldStr).length - 1
+  if (count > 1 && !opts?.replaceAll) {
+    throw new Error(
+      `edit_file: old string matches ${count} times — make it unique or pass replaceAll`
+    )
+  }
+  const next = opts?.replaceAll
+    ? body.split(oldStr).join(newStr)
+    : body.replace(oldStr, newStr)
+  writeFileSync(path, next, 'utf8')
+  return `edited ${path} (${count} replacement${count === 1 ? '' : 's'})`
 }
 
 const DANGEROUS =
