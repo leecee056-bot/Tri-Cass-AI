@@ -545,6 +545,79 @@ button {
   margin: 0;
 }
 
+.thread-title-btn {
+  border: 0;
+  background: transparent;
+  padding: 0;
+  cursor: text;
+  text-align: left;
+  color: inherit;
+  max-width: min(42vw, 420px);
+}
+
+.thread-title-btn:hover .thread-title {
+  text-decoration: underline;
+  text-decoration-color: color-mix(in srgb, var(--accent) 45%, transparent);
+}
+
+.thread-title-input {
+  font-family: var(--font-serif);
+  font-size: 1.05rem;
+  font-weight: 560;
+  letter-spacing: -0.02em;
+  border: 1px solid var(--border);
+  background: var(--bg-elevated);
+  color: var(--text);
+  border-radius: 10px;
+  padding: 4px 10px;
+  min-width: 180px;
+  max-width: min(42vw, 420px);
+}
+
+.entry-row {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 6px;
+  margin-top: 6px;
+}
+
+.entry-row .btn {
+  font-size: 0.78rem;
+  padding: 0.45rem 0.5rem;
+}
+
+.sidebar-save-hint {
+  margin: 6px 0 0;
+  font-size: 0.72rem;
+  color: var(--text-muted);
+  text-align: center;
+}
+
+.chat-item-title {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  max-width: 140px;
+}
+
+.archived-block {
+  margin-top: 8px;
+  border-top: 1px solid var(--border);
+  padding-top: 6px;
+}
+
+.chat-item.archived {
+  opacity: 0.78;
+}
+
+.empty-cta-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  justify-content: center;
+  margin: 12px 0 8px;
+}
+
 .header-actions {
   display: flex;
   align-items: center;

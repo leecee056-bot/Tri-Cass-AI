@@ -132,6 +132,7 @@ export function scaffoldWebsite(title = 'Tri Cass Site'): { projectPath: string;
   <meta name="viewport" content="width=device-width, initial-scale=1" />
   <meta name="description" content="${title} — built locally with Tri Cass AI" />
   <title>${title}</title>
+  <link rel="icon" href="assets/favicon.svg" type="image/svg+xml" />
   <link rel="stylesheet" href="assets/css/styles.css" />
 </head>
 <body>
@@ -197,6 +198,7 @@ export function scaffoldWebsite(title = 'Tri Cass Site'): { projectPath: string;
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
   <title>About · ${title}</title>
+  <link rel="icon" href="assets/favicon.svg" type="image/svg+xml" />
   <link rel="stylesheet" href="assets/css/styles.css" />
 </head>
 <body>
@@ -237,6 +239,7 @@ export function scaffoldWebsite(title = 'Tri Cass Site'): { projectPath: string;
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
   <title>Contact · ${title}</title>
+  <link rel="icon" href="assets/favicon.svg" type="image/svg+xml" />
   <link rel="stylesheet" href="assets/css/styles.css" />
 </head>
 <body>
@@ -405,6 +408,17 @@ code {
 
   files.push(
     write(
+      join(projectPath, 'assets/favicon.svg'),
+      `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" role="img" aria-label="${title}">
+  <rect width="64" height="64" rx="14" fill="#3d9a6a"/>
+  <path fill="#04150c" d="M18 40V24h8.2c4.6 0 7.4 2.2 7.4 5.8 0 2.6-1.4 4.5-3.7 5.4L36 40h-5.2l-5.2-4.4H23V40H18zm5-8.2h3c1.9 0 3-.9 3-2.4s-1.1-2.3-3-2.3h-3v4.7zM38 40l6.8-16H50L56.8 40h-5.1l-1.2-3.1h-6.3L43.1 40H38zm8.2-7.2h4.1l-2-5.2-2.1 5.2z"/>
+</svg>
+`
+    )
+  )
+
+  files.push(
+    write(
       join(projectPath, 'assets/js/main.js'),
       `const root = document.documentElement;
 const stored = localStorage.getItem('tri-cass-theme');
@@ -485,6 +499,7 @@ Then visit http://127.0.0.1:4173
 - \`about.html\` / \`contact.html\` — secondary pages
 - \`assets/css/styles.css\` — layout, theme, components
 - \`assets/js/main.js\` — theme toggle, counter, form validation
+- \`assets/favicon.svg\` — site icon
 `
     )
   )
